@@ -84,7 +84,11 @@ while page <= max_pages_safety:
 
         e = Event()
         e.name = title
+
+        # 🔥 IMPORTANT CHANGE: make it all-day
         e.begin = date
+        e.make_all_day()
+
         e.description = location or f"Source: {url}"
 
         cal.events.add(e)
