@@ -25,27 +25,29 @@ def parse_date(text):
 
     return datetime(datetime.now().year, MONTHS[mon], day)
 
+session = requests.Session()
+session.headers.update({
+    "User-Agent": "Mozilla/5.0"
+})
+
 def fetch_page(page_num):
     url = BASE_URL.format(page_num)
-    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    r = session.get(url)
     return r.text, url
 
 cal = Calendar()
 seen = set()
 
 page = 1
-max_pages_safety = 200  # prevents infinite loops if site changes
+max_pages_safety = 200
 
 while page <= max_pages_safety:
     html, url = fetch_page(page)
 
-    # 🛑 stop condition
     if "No Events are found" in html:
-        print(f"Stopped at page {page} (no more events)")
         break
 
     soup = BeautifulSoup(html, "html.parser")
-
     blocks = soup.find_all(["p", "div", "h2", "h3", "span"])
 
     page_events = 0
@@ -60,7 +62,6 @@ while page <= max_pages_safety:
             continue
 
         parent = b.parent
-
         title = None
         location = None
 
@@ -89,11 +90,7 @@ while page <= max_pages_safety:
         cal.events.add(e)
         page_events += 1
 
-    print(f"Page {page}: {page_events} events")
-
-    # if a page returns zero events, also stop (extra safety)
     if page_events == 0:
-        print(f"Stopped at page {page} (no parsable events)")
         break
 
     page += 1
@@ -101,4 +98,4 @@ while page <= max_pages_safety:
 with open("gigs.ics", "w") as f:
     f.writelines(cal)
 
-print(f"\nDone. Total events: {len(cal.events)}")
+print(f"Done: {len(cal.events)} events")
