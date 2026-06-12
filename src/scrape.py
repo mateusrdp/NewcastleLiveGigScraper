@@ -4,7 +4,7 @@ from ics import Calendar, Event
 from datetime import datetime
 import re
 
-URL = "https://newcastlelive.com.au/gig-guide-event-calendar/"
+BASE_URL = "https://newcastlelive.com.au/gig-guide-event-calendar/page/{}/"
 
 MONTHS = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4,
@@ -18,64 +18,87 @@ def parse_date(text):
         return None
 
     mon = match.group(1)
-    day = match.group(2)
+    day = int(match.group(2))
 
     if mon not in MONTHS:
         return None
 
-    return datetime(datetime.now().year, MONTHS[mon], int(day))
+    return datetime(datetime.now().year, MONTHS[mon], day)
 
-r = requests.get(URL, headers={"User-Agent": "Mozilla/5.0"})
-soup = BeautifulSoup(r.text, "html.parser")
+def fetch_page(page_num):
+    url = BASE_URL.format(page_num)
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    return r.text, url
 
 cal = Calendar()
-
-# 🔥 KEY FIX: only consider meaningful content blocks
-blocks = soup.find_all(["p", "div", "h2", "h3", "span"])
-
 seen = set()
 
-for b in blocks:
-    text = b.get_text(" ", strip=True)
+page = 1
+max_pages_safety = 200  # prevents infinite loops if site changes
 
-    if not text:
-        continue
+while page <= max_pages_safety:
+    html, url = fetch_page(page)
 
-    date = parse_date(text)
-    if not date:
-        continue
+    # 🛑 stop condition
+    if "No Events are found" in html:
+        print(f"Stopped at page {page} (no more events)")
+        break
 
-    # find a nearby title (usually in same or next block)
-    parent = b.parent
-    title = None
-    location = None
+    soup = BeautifulSoup(html, "html.parser")
 
-    if parent:
-        title_tag = parent.find(["a", "strong", "h3"])
-        if title_tag:
-            title = title_tag.get_text(" ", strip=True)
+    blocks = soup.find_all(["p", "div", "h2", "h3", "span"])
 
-        # fallback: next sibling text
-        sib = b.find_next_sibling()
-        if sib:
-            location = sib.get_text(" ", strip=True)
+    page_events = 0
 
-    if not title:
-        continue
+    for b in blocks:
+        text = b.get_text(" ", strip=True)
+        if not text:
+            continue
 
-    key = (title, date)
-    if key in seen:
-        continue
-    seen.add(key)
+        date = parse_date(text)
+        if not date:
+            continue
 
-    e = Event()
-    e.name = title
-    e.begin = date
-    e.description = location or ""
+        parent = b.parent
 
-    cal.events.add(e)
+        title = None
+        location = None
+
+        if parent:
+            title_tag = parent.find(["a", "strong", "h3"])
+            if title_tag:
+                title = title_tag.get_text(" ", strip=True)
+
+            sib = b.find_next_sibling()
+            if sib:
+                location = sib.get_text(" ", strip=True)
+
+        if not title:
+            continue
+
+        key = (title, date)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        e = Event()
+        e.name = title
+        e.begin = date
+        e.description = location or f"Source: {url}"
+
+        cal.events.add(e)
+        page_events += 1
+
+    print(f"Page {page}: {page_events} events")
+
+    # if a page returns zero events, also stop (extra safety)
+    if page_events == 0:
+        print(f"Stopped at page {page} (no parsable events)")
+        break
+
+    page += 1
 
 with open("gigs.ics", "w") as f:
     f.writelines(cal)
 
-print(f"Generated {len(cal.events)} events")
+print(f"\nDone. Total events: {len(cal.events)}")
