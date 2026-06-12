@@ -2,8 +2,11 @@ name: Update ICS Feed
 
 on:
   schedule:
-    - cron: "0 0 * * 1"  # every Monday (UTC)
+    - cron: "0 14 * * 0"  # Monday 00:00 AEST
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
