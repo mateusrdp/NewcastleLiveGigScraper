@@ -225,10 +225,15 @@ if len(cal.events) > 0:
         if not keywords:
             continue
 
+        patterns = [
+            re.compile(rf"(?<![A-Za-z0-9]){re.escape(kw)}(?![A-Za-z0-9])", re.IGNORECASE)
+            for kw in keywords
+        ]
+
         filtered_cal = Calendar()
         for event in cal.events:
             summary = event.name or ""
-            if any(kw.lower() in summary.lower() for kw in keywords):
+            if any(pattern.search(summary) for pattern in patterns):
                 filtered_cal.events.add(event)
 
         out_path = f"calendars/gigs_{filter_name}.ics"
