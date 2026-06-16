@@ -1,0 +1,10 @@
+name: Run Update ICS on Main Push
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  run-update-ics:
+    uses: ./.github/workflows/update_ics.yml
