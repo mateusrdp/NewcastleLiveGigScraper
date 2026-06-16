@@ -34,7 +34,7 @@ jobs:
       - name: Prepare Pages folder
         run: |
           mkdir -p public
-          mv gigs.ics public/gigs.ics
+          cp calendars/*.ics public/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

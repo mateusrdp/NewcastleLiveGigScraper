@@ -1,3 +1,5 @@
+import os
+import glob
 import requests
 from bs4 import BeautifulSoup
 from ics import Calendar, Event
@@ -159,9 +161,6 @@ if not is_ok:
     print(f"Error: GET {url} returned {status_code} {reason}")
     raise SystemExit(1)
 
-with open("page-1.html", "w", encoding="utf-8") as f:
-    f.write(first_page_html)
-
 config = parse_nlgg_config(first_page_html)
 if not config:
     print("Error: Could not parse window.NLGG config from page HTML")
@@ -209,9 +208,32 @@ while page <= max_pages_safety:
 
     page += 1
 
+os.makedirs("calendars", exist_ok=True)
+
 if len(cal.events) > 0:
-    # Open in write mode so the calendar is overwritten each run.
-    with open("gigs.ics", "w", encoding="utf-8") as f:
+    # Save the full calendar.
+    with open("calendars/gigs.ics", "w", encoding="utf-8") as f:
         f.writelines(cal)
+
+    # Generate a filtered calendar for each txt file in the filters/ directory.
+    for filter_path in glob.glob("filters/*.txt"):
+        filter_name = os.path.splitext(os.path.basename(filter_path))[0]
+
+        with open(filter_path, encoding="utf-8") as fh:
+            keywords = [line.strip() for line in fh if line.strip()]
+
+        if not keywords:
+            continue
+
+        filtered_cal = Calendar()
+        for event in cal.events:
+            summary = event.name or ""
+            if any(kw.lower() in summary.lower() for kw in keywords):
+                filtered_cal.events.add(event)
+
+        out_path = f"calendars/gigs_{filter_name}.ics"
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.writelines(filtered_cal)
+        print(f"Filter '{filter_name}': {len(filtered_cal.events)} events -> {out_path}")
 
 print(f"Done: {len(cal.events)} events")
