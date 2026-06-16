@@ -1,6 +1,7 @@
 name: Build ICS Feed
 
 on:
+  workflow_call:
   schedule:
     - cron: "0 14 * * 0"  # Monday 00:00 AEST
   workflow_dispatch:
