@@ -44,6 +44,10 @@ jobs:
           mkdir -p public
           cp calendars/*.ics public/
 
+      - name: Generate index page
+        run: |
+          python src/generate_index.py public "${{ github.repository }}"
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
