@@ -1,5 +1,17 @@
+"""
+Scrapes NewcastleLive's gig guide and writes calendars/newcastlelive.ics.
+
+This script is run by src/main.py as one of several scrapers. It is
+expected to be executed with the project root as the working directory
+(src/main.py takes care of that), so the "calendars/..." path below
+resolves to <project_root>/calendars/newcastlelive.ics.
+
+Filtering by keyword happens once, centrally, in src/main.py after all
+scrapers' calendars have been merged — this script only needs to produce
+its own raw calendar.
+"""
+
 import os
-import glob
 import requests
 from bs4 import BeautifulSoup
 from ics import Calendar, Event
@@ -122,6 +134,7 @@ def parse_event_from_card(card, source_url):
     return {
         "title": summary,
         "date": date,
+        "venue": venue,
         "description": "\n".join(details)
     }
 
@@ -198,6 +211,8 @@ while page <= max_pages_safety:
         e.begin = event_info["date"]
         e.make_all_day()
         e.description = event_info["description"]
+        if event_info["venue"]:
+            e.location = event_info["venue"]
 
         cal.events.add(e)
         page_events += 1
@@ -211,34 +226,7 @@ while page <= max_pages_safety:
 os.makedirs("calendars", exist_ok=True)
 
 if len(cal.events) > 0:
-    # Save the full calendar.
-    with open("calendars/gigs.ics", "w", encoding="utf-8") as f:
+    with open("calendars/newcastlelive.ics", "w", encoding="utf-8") as f:
         f.writelines(cal)
-
-    # Generate a filtered calendar for each txt file in the filters/ directory.
-    for filter_path in glob.glob("filters/*.txt"):
-        filter_name = os.path.splitext(os.path.basename(filter_path))[0]
-
-        with open(filter_path, encoding="utf-8") as fh:
-            keywords = [line.strip() for line in fh if line.strip()]
-
-        if not keywords:
-            continue
-
-        patterns = [
-            re.compile(rf"(?<![A-Za-z0-9]){re.escape(kw)}(?![A-Za-z0-9])", re.IGNORECASE)
-            for kw in keywords
-        ]
-
-        filtered_cal = Calendar()
-        for event in cal.events:
-            summary = event.name or ""
-            if any(pattern.search(summary) for pattern in patterns):
-                filtered_cal.events.add(event)
-
-        out_path = f"calendars/gigs_{filter_name}.ics"
-        with open(out_path, "w", encoding="utf-8") as f:
-            f.writelines(filtered_cal)
-        print(f"Filter '{filter_name}': {len(filtered_cal.events)} events -> {out_path}")
 
 print(f"Done: {len(cal.events)} events")
