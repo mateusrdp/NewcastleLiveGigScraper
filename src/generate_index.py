@@ -96,7 +96,7 @@ def build_html(ics_files, base_url):
 </head>
 <body>
   <h1>🎶 Newcastle Gig Guide Calendars</h1>
-  <p>Enjoy the calendars below, and keep live music alive! If you can, please support the musicians and venues you see on them.</p>
+  <p>Enjoy the calendars below, and keep live music alive! If you can, please support the musicians and venues you see on them! ROCK ON!</p>
   <ul>
     {items_html}
   </ul>
