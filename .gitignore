@@ -1,2 +1,3 @@
 calendars/*.ics
 .vscode/
+src/__pycache__/*

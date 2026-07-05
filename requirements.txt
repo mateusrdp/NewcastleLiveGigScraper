@@ -1,3 +1,4 @@
 ics
 bs4
 requests
+icalendar

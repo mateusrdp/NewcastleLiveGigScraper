@@ -3,7 +3,14 @@ name: Build ICS Feed
 on:
   workflow_call:
   schedule:
-    - cron: "0 14 * * 0"  # Monday 00:00 AEST
+    # GitHub Actions cron always runs in UTC and doesn't shift for daylight
+    # saving, so a single fixed UTC time would land an hour off local
+    # midnight for half the year. Two entries approximate Monday 00:00
+    # local time across both AEST and AEDT (the exact DST switchover date
+    # moves by a week or two each year, so expect ~1hr drift for a week or
+    # two right around the early-Apr/early-Oct changeover).
+    - cron: "0 14 4-9 * 0"        # Apr-Sep (AEST, UTC+10) -> Monday 00:00 AEST
+    - cron: "0 13 1-3,10-12 * 0"  # Oct-Mar (AEDT, UTC+11) -> Monday 00:00 AEDT
   workflow_dispatch:
 
 permissions:
@@ -28,9 +35,9 @@ jobs:
         run: |
               pip install -r requirements.txt
 
-      - name: Run scraper
+      - name: Run pipeline
         run: |
-          python src/scrape.py
+          python src/main.py
 
       - name: Prepare Pages folder
         run: |
