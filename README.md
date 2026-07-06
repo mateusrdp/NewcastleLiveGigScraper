@@ -13,3 +13,10 @@ Other than that... have fun, and might see you at one of these events!
 Cheers
 
 -Mat.
+
+## TODO
+- Merge events by name similarity
+- Merge multi-day events
+- NewcastleLive: add "buy tickets" and "more info" links
+- NewcastleLive: use a more robust fetcher, that works from GH actions
+- Add support for image flyer-only sources (eg: Wicko and Stag)
