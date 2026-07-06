@@ -96,13 +96,14 @@ def build_html(ics_files, base_url):
 </head>
 <body>
   <h1>🎶 Newcastle Gig Guide Calendars</h1>
-  <p>Enjoy the calendars below, and keep live music alive! If you can, please support the musicians and venues you see on them! ROCK ON!</p>
+  <p>Enjoy the calendars below, and keep live music alive! If you can, please support the musicians and venues you see on them.</p>
   <ul>
     {items_html}
   </ul>
   <footer>
     <p>"Download / View" opens or downloads the raw .ics file. "Subscribe" hands the calendar straight to your default calendar app (works well in Apple Calendar and Outlook). For Google Calendar, use its "Subscribe from URL" option with the Download link's URL instead.</p>
     <p>This page and the calendars linked from it are regenerated automatically.</p>
+    <p><a href="debug.html">🐛 Scraper debug snapshots</a></p>
   </footer>
 </body>
 </html>

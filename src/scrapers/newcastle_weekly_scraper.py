@@ -23,7 +23,12 @@ its own raw calendar.
 import hashlib
 import os
 import re
-from datetime import date, datetime, timedelta, timezone
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scraper_debug import save_debug_page
+
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 import requests
@@ -33,9 +38,6 @@ from icalendar import Calendar, Event
 SYDNEY_TZ = ZoneInfo("Australia/Sydney")
 
 GUIDE_URL = "https://newcastleweekly.com.au/the-ultimate-newcastle-gig-guide/"
-
-# The source never gives an end time — assume a gig runs this long by default.
-DEFAULT_EVENT_DURATION = timedelta(hours=3)
 
 FULL_MONTHS = {
     "january": 1, "february": 2, "march": 3, "april": 4,
@@ -165,6 +167,7 @@ def scrape_gig_guide(url):
     r = session.get(url)
     if not r.ok:
         print(f"Error: GET {url} returned {r.status_code} {r.reason}")
+        save_debug_page("newcastleweekly", "http_error", r.text)
         return []
 
     soup = BeautifulSoup(r.text, "html.parser")
@@ -172,6 +175,7 @@ def scrape_gig_guide(url):
     date_headings = [h for h in soup.find_all(HEADING_TAGS) if parse_date_header(h.get_text(strip=True))]
     if not date_headings:
         print("Warning: no date-separator headings found — page structure may have changed.")
+        save_debug_page("newcastleweekly", "no_date_headers", r.text)
         return []
 
     container = date_headings[0].parent
@@ -200,6 +204,12 @@ def scrape_gig_guide(url):
             if event_info:
                 events.append(event_info)
 
+    if not events:
+        # Date headers were found, but nothing was parsed out from under
+        # them — could be a genuinely quiet stretch, or the per-event
+        # markup pattern changed. Worth a look either way.
+        save_debug_page("newcastleweekly", "zero_events_parsed", r.text)
+
     return events
 
 
@@ -221,9 +231,9 @@ def build_calendar(events, source_url):
 
         if event_info["datetime"] is not None:
             e.add("DTSTART", event_info["datetime"])
-            # The source only ever gives a start time, never an end time —
-            # assume a 3-hour set/gig length by default.
-            e.add("DTEND", event_info["datetime"] + DEFAULT_EVENT_DURATION)
+            # No DTEND set here on purpose — the shared post-processing
+            # step in merge_ics.py fills in a default 3-hour duration for
+            # any timed event that arrives without one.
         else:
             e.add("DTSTART", event_info["date"])
 

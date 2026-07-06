@@ -41,7 +41,12 @@ its own raw calendar.
 import hashlib
 import os
 import re
-from datetime import date, datetime, timedelta, timezone
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scraper_debug import save_debug_page
+
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 import requests
@@ -51,9 +56,6 @@ from icalendar import Calendar, Event
 GUIDE_URL = "https://whirlwindent.com.au/weeklygigguide.asp"
 
 SYDNEY_TZ = ZoneInfo("Australia/Sydney")
-
-# The source never gives an end time — assume a gig runs this long by default.
-DEFAULT_EVENT_DURATION = timedelta(hours=3)
 
 FULL_MONTHS = {
     "january": 1, "february": 2, "march": 3, "april": 4,
@@ -209,11 +211,19 @@ def scrape_gig_guide(url):
     r = session.get(url)
     if not r.ok:
         print(f"Error: GET {url} returned {r.status_code} {r.reason}")
+        save_debug_page("whirlwind", "http_error", r.text)
         return []
 
     soup = BeautifulSoup(r.text, "html.parser")
     lines = list(soup.stripped_strings)
-    return parse_lines(lines, url)
+    events = parse_lines(lines, url)
+
+    if not events:
+        # Could be a genuinely quiet day, or the page structure changed —
+        # worth a look either way.
+        save_debug_page("whirlwind", "zero_events_parsed", r.text)
+
+    return events
 
 
 def build_calendar(events, source_url):
@@ -241,9 +251,9 @@ def build_calendar(events, source_url):
                 tzinfo=SYDNEY_TZ,
             )
             e.add("DTSTART", event_datetime)
-            # The source only ever gives a start time, never an end time —
-            # assume a 3-hour set/gig length by default.
-            e.add("DTEND", event_datetime + DEFAULT_EVENT_DURATION)
+            # No DTEND set here on purpose — the shared post-processing
+            # step in merge_ics.py fills in a default 3-hour duration for
+            # any timed event that arrives without one.
         else:
             e.add("DTSTART", event_info["date"])
 

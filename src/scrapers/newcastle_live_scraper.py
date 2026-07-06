@@ -12,6 +12,11 @@ its own raw calendar.
 """
 
 import os
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scraper_debug import save_debug_page
+
 import requests
 from bs4 import BeautifulSoup
 from icalendar import Calendar, Event
@@ -116,6 +121,49 @@ def parse_nlgg_config(page_html):
         "limitFilter": get_value("limitFilter")
     }
 
+# Text we've been told appears on the actual "More info"/"Buy Tickets"
+# style buttons on gig cards, used to find them by what they say rather
+# than by a guessed CSS class name (which we've never been able to
+# confirm against the real page markup).
+CTA_TEXT_KEYWORDS = (
+    "more info", "info", "buy tickets", "get tickets", "tickets",
+    "book now", "book tickets", "rsvp", "details", "learn more",
+)
+
+
+def _looks_like_cta_link(a_tag):
+    text = a_tag.get_text(" ", strip=True).lower()
+    if any(keyword in text for keyword in CTA_TEXT_KEYWORDS):
+        return True
+    # Fall back to a button-ish class on the link itself or its parent,
+    # in case the button text varies more than expected.
+    own_classes = " ".join(a_tag.get("class") or [])
+    parent = a_tag.parent
+    parent_classes = " ".join((parent.get("class") or [])) if parent else ""
+    combined = f"{own_classes} {parent_classes}".lower()
+    return any(marker in combined for marker in ("button", "btn", "cta", "buy", "ticket"))
+
+
+def extract_cta_links(card):
+    """Find "More info"/"Buy Tickets"-style call-to-action links anywhere
+    on a gig card. Returns [(label, href), ...] in document order, using
+    each link's own visible text as the label."""
+    links = []
+    seen_hrefs = set()
+    for a in card.find_all("a", href=True):
+        href = a.get("href")
+        if not href or href.startswith("#") or href.lower().startswith("javascript:"):
+            continue
+        if href in seen_hrefs:
+            continue
+        if not _looks_like_cta_link(a):
+            continue
+        label = a.get_text(" ", strip=True) or "Link"
+        links.append((label, href))
+        seen_hrefs.add(href)
+    return links
+
+
 def parse_event_from_card(card, source_url):
     def get_line_text(line_selector):
         line = card.select_one(line_selector)
@@ -145,17 +193,13 @@ def parse_event_from_card(card, source_url):
     venue = get_line_text(".nlgg-line-venue")
     address = get_line_text(".nlgg-line-address")
 
-    cta_links = [
-        a.get("href")
-        for a in card.select(".nlgg-buttons a[href]")
-        if a.get("href")
-    ]
+    cta_links = extract_cta_links(card)
 
     details = []
     if address:
         details.append(f"Address: {address}")
-    if cta_links:
-        details.append("Links: " + " | ".join(cta_links))
+    for label, href in cta_links:
+        details.append(f"{label}: {href}")
     details.append(f"Source: {source_url}")
 
     summary = f"{title} @ {venue}" if venue else title
@@ -182,18 +226,18 @@ def fetch_ajax_events(config, page_num):
 
     r = session.post(AJAX_URL, data=payload, timeout=20)
     if not r.ok:
-        return None, r.status_code, r.reason
+        return None, r.status_code, r.reason, r.text
 
     try:
         data = r.json()
     except ValueError:
-        return None, r.status_code, "Invalid JSON"
+        return None, r.status_code, "Invalid JSON", r.text
 
     if not data.get("success"):
-        return None, r.status_code, "AJAX call returned success=false"
+        return None, r.status_code, "AJAX call returned success=false", r.text
 
     html = data.get("data", {}).get("html", "")
-    return html, r.status_code, "OK"
+    return html, r.status_code, "OK", r.text
 
 cal = Calendar()
 cal.add("prodid", "-//NewcastleLiveGigScraper//newcastlelive//EN")
@@ -203,11 +247,13 @@ seen = set()
 first_page_html, url, is_ok, status_code, reason = fetch_page(1)
 if not is_ok:
     print(f"Error: GET {url} returned {status_code} {reason}")
+    save_debug_page("newcastlelive", "http_error_page1", first_page_html)
     raise SystemExit(1)
 
 config = parse_nlgg_config(first_page_html)
 if not config:
     print("Error: Could not parse window.NLGG config from page HTML")
+    save_debug_page("newcastlelive", "no_nlgg_config", first_page_html)
     if looks_like_challenge_page(first_page_html):
         print(
             "The response looks like a bot-challenge/CAPTCHA page rather than the "
@@ -227,10 +273,11 @@ page = 1
 max_pages_safety = 200
 
 while page <= max_pages_safety:
-    html, status_code, reason = fetch_ajax_events(config, page)
+    html, status_code, reason, raw_response_text = fetch_ajax_events(config, page)
 
     if html is None:
         print(f"Warning: stopping scrape because AJAX page {page} returned {status_code} {reason}")
+        save_debug_page("newcastlelive", f"ajax_error_page{page}", raw_response_text)
         break
 
     soup = BeautifulSoup(html, "html.parser")

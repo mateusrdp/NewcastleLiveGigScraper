@@ -41,12 +41,17 @@ jobs:
 
       - name: Prepare Pages folder
         run: |
-          mkdir -p public
+          rm -rf public
+          mkdir -p public public/debug
           cp calendars/*.ics public/
+          if [ -d calendars/debug ] && [ -n "$(ls -A calendars/debug 2>/dev/null)" ]; then
+            cp calendars/debug/* public/debug/
+          fi
 
-      - name: Generate index page
+      - name: Generate index pages
         run: |
           python src/generate_index.py public "${{ github.repository }}"
+          python src/generate_debug_index.py public
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
