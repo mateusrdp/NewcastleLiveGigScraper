@@ -38,14 +38,15 @@ scrapers' calendars have been merged — this script only needs to produce
 its own raw calendar.
 """
 
+import hashlib
 import os
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
-from ics import Calendar, Event
+from icalendar import Calendar, Event
 
 GUIDE_URL = "https://whirlwindent.com.au/weeklygigguide.asp"
 
@@ -217,6 +218,8 @@ def scrape_gig_guide(url):
 
 def build_calendar(events, source_url):
     cal = Calendar()
+    cal.add("prodid", "-//NewcastleLiveGigScraper//whirlwind//EN")
+    cal.add("version", "2.0")
     seen = set()
 
     for event_info in events:
@@ -226,28 +229,31 @@ def build_calendar(events, source_url):
         seen.add(key)
 
         e = Event()
-        e.name = f"{event_info['title']} @ {event_info['venue']}"
-        e.location = event_info["venue"]
+        e.add("SUMMARY", f"{event_info['title']} @ {event_info['venue']}")
+        e.add("LOCATION", event_info["venue"])
 
         parsed_time = parse_time_text(event_info["time_text"])
         if parsed_time:
             hour, minute = parsed_time
             ev_date = event_info["date"]
-            e.begin = datetime(
+            event_datetime = datetime(
                 ev_date.year, ev_date.month, ev_date.day, hour, minute,
                 tzinfo=SYDNEY_TZ,
             )
+            e.add("DTSTART", event_datetime)
             # The source only ever gives a start time, never an end time —
             # assume a 3-hour set/gig length by default.
-            e.duration = DEFAULT_EVENT_DURATION
+            e.add("DTEND", event_datetime + DEFAULT_EVENT_DURATION)
         else:
-            e.begin = event_info["date"]
-            e.make_all_day()
+            e.add("DTSTART", event_info["date"])
 
         details = [f"Reported time: {event_info['time_text'] or 'not specified'}", f"Source: {source_url}"]
-        e.description = "\n".join(details)
+        e.add("DESCRIPTION", "\n".join(details))
+        e.add("DTSTAMP", datetime.now(timezone.utc))
+        uid_seed = f"{event_info['title']}|{event_info['venue']}|{event_info['date']}".encode("utf-8")
+        e.add("UID", f"whirlwind-{hashlib.md5(uid_seed).hexdigest()}@whirlwind")
 
-        cal.events.add(e)
+        cal.add_component(e)
 
     return cal
 
@@ -257,11 +263,12 @@ def main():
     cal = build_calendar(events, GUIDE_URL)
 
     os.makedirs("calendars", exist_ok=True)
-    if len(cal.events) > 0:
-        with open("calendars/whirlwind.ics", "w", encoding="utf-8") as f:
-            f.writelines(cal)
+    event_count = len(cal.walk("VEVENT"))
+    if event_count > 0:
+        with open("calendars/whirlwind.ics", "wb") as f:
+            f.write(cal.to_ical())
 
-    print(f"Done: {len(cal.events)} events")
+    print(f"Done: {event_count} events")
 
 
 if __name__ == "__main__":

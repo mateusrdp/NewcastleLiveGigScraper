@@ -1,4 +1,3 @@
-ics
-bs4
 requests
+beautifulsoup4
 icalendar

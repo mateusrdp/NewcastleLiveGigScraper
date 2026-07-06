@@ -68,6 +68,19 @@ def normalize_timezone(vevent):
     return vevent
 
 
+# Some ICS writers (notably the `ics` library, used by our scrapers, for
+# all-day events) emit a bare 8-digit date like "DTSTART:20260717" without
+# the ";VALUE=DATE" parameter RFC 5545 requires to disambiguate it from a
+# (malformed) DATE-TIME. The `icalendar` library correctly refuses to guess
+# in that case and raises "Expected datetime, date, or time." Patch these
+# up before parsing rather than depend on the writer being fixed upstream.
+BARE_DATE_RE = re.compile(rb"^(DTSTART|DTEND):(\d{8})(\r?)$", re.MULTILINE)
+
+
+def _fix_bare_date_values(raw_bytes):
+    return BARE_DATE_RE.sub(rb"\1;VALUE=DATE:\2\3", raw_bytes)
+
+
 def load_events(folder):
     """Return a list of (source_filename, vevent) for every VEVENT found
     in every .ics file inside `folder`. Auto-detects all .ics files.
@@ -88,7 +101,8 @@ def load_events(folder):
         fname = os.path.basename(path)
         try:
             with open(path, "rb") as f:
-                cal = Calendar.from_ical(f.read())
+                raw = _fix_bare_date_values(f.read())
+                cal = Calendar.from_ical(raw)
         except Exception as e:
             print(f"  Could not parse {fname}: {e}", file=sys.stderr)
             continue

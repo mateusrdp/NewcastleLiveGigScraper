@@ -14,8 +14,9 @@ its own raw calendar.
 import os
 import requests
 from bs4 import BeautifulSoup
-from ics import Calendar, Event
-from datetime import datetime
+from icalendar import Calendar, Event
+from datetime import datetime, timezone
+import hashlib
 import re
 import time
 
@@ -195,6 +196,8 @@ def fetch_ajax_events(config, page_num):
     return html, r.status_code, "OK"
 
 cal = Calendar()
+cal.add("prodid", "-//NewcastleLiveGigScraper//newcastlelive//EN")
+cal.add("version", "2.0")
 seen = set()
 
 first_page_html, url, is_ok, status_code, reason = fetch_page(1)
@@ -248,14 +251,19 @@ while page <= max_pages_safety:
         seen.add(key)
 
         e = Event()
-        e.name = event_info["title"]
-        e.begin = event_info["date"]
-        e.make_all_day()
-        e.description = event_info["description"]
+        e.add("SUMMARY", event_info["title"])
+        # event_info["date"] is a midnight-of-day datetime; convert to a
+        # plain date so icalendar writes it as an all-day VALUE=DATE
+        # property rather than a timed DATE-TIME.
+        e.add("DTSTART", event_info["date"].date())
+        e.add("DESCRIPTION", event_info["description"])
         if event_info["venue"]:
-            e.location = event_info["venue"]
+            e.add("LOCATION", event_info["venue"])
+        e.add("DTSTAMP", datetime.now(timezone.utc))
+        uid_seed = f"{event_info['title']}|{event_info['date'].date()}".encode("utf-8")
+        e.add("UID", f"newcastlelive-{hashlib.md5(uid_seed).hexdigest()}@newcastlelive")
 
-        cal.events.add(e)
+        cal.add_component(e)
         page_events += 1
 
     # Stop once pagination produces no new events.
@@ -266,8 +274,9 @@ while page <= max_pages_safety:
 
 os.makedirs("calendars", exist_ok=True)
 
-if len(cal.events) > 0:
-    with open("calendars/newcastlelive.ics", "w", encoding="utf-8") as f:
-        f.writelines(cal)
+event_count = len(cal.walk("VEVENT"))
+if event_count > 0:
+    with open("calendars/newcastlelive.ics", "wb") as f:
+        f.write(cal.to_ical())
 
-print(f"Done: {len(cal.events)} events")
+print(f"Done: {event_count} events")
