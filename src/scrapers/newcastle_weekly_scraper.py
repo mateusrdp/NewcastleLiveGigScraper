@@ -22,7 +22,7 @@ its own raw calendar.
 
 import os
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
@@ -32,6 +32,9 @@ from ics import Calendar, Event
 SYDNEY_TZ = ZoneInfo("Australia/Sydney")
 
 GUIDE_URL = "https://newcastleweekly.com.au/the-ultimate-newcastle-gig-guide/"
+
+# The source never gives an end time — assume a gig runs this long by default.
+DEFAULT_EVENT_DURATION = timedelta(hours=3)
 
 FULL_MONTHS = {
     "january": 1, "february": 2, "march": 3, "april": 4,
@@ -215,6 +218,9 @@ def build_calendar(events, source_url):
 
         if event_info["datetime"] is not None:
             e.begin = event_info["datetime"]
+            # The source only ever gives a start time, never an end time —
+            # assume a 3-hour set/gig length by default.
+            e.duration = DEFAULT_EVENT_DURATION
         else:
             e.begin = event_info["date"]
             e.make_all_day()

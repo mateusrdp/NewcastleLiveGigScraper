@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup
 from ics import Calendar, Event
 from datetime import datetime
 import re
+import time
 
 BASE_URL = "https://newcastlelive.com.au/gig-guide-event-calendar/page-{}/"
 GUIDE_URL = "https://newcastlelive.com.au/gig-guide-event-calendar/"
@@ -59,13 +60,40 @@ def parse_date(text):
 
 session = requests.Session()
 session.headers.update({
-    "User-Agent": "Mozilla/5.0"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-AU,en;q=0.9",
+    "Referer": "https://newcastlelive.com.au/",
 })
 
-def fetch_page(page_num):
+# Common substrings seen on bot-challenge / block pages (Cloudflare and
+# similar). Used only to make failures easier to diagnose from CI logs —
+# this can't bypass a real JS challenge, it just names what happened.
+CHALLENGE_PAGE_MARKERS = [
+    "just a moment", "cf-browser-verification", "cf_chl", "cf-chl",
+    "attention required", "access denied", "captcha", "are you a robot",
+]
+
+
+def looks_like_challenge_page(html_text):
+    lowered = html_text.lower()
+    return any(marker in lowered for marker in CHALLENGE_PAGE_MARKERS)
+
+
+def fetch_page(page_num, retries=3, backoff_seconds=2):
     url = BASE_URL.format(page_num)
-    r = session.get(url)
-    return r.text, url, r.ok, r.status_code, r.reason
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            r = session.get(url, timeout=20)
+            return r.text, url, r.ok, r.status_code, r.reason
+        except requests.RequestException as e:
+            last_exc = e
+            print(f"Warning: request to {url} failed (attempt {attempt}/{retries}): {e}")
+            if attempt < retries:
+                time.sleep(backoff_seconds * attempt)
+    raise last_exc
 
 def parse_nlgg_config(page_html):
     # Extract the inline object assigned to window.NLGG from the page.
@@ -151,7 +179,7 @@ def fetch_ajax_events(config, page_num):
         "limit_filter": config.get("limitFilter", "")
     }
 
-    r = session.post(AJAX_URL, data=payload)
+    r = session.post(AJAX_URL, data=payload, timeout=20)
     if not r.ok:
         return None, r.status_code, r.reason
 
@@ -177,6 +205,19 @@ if not is_ok:
 config = parse_nlgg_config(first_page_html)
 if not config:
     print("Error: Could not parse window.NLGG config from page HTML")
+    if looks_like_challenge_page(first_page_html):
+        print(
+            "The response looks like a bot-challenge/CAPTCHA page rather than the "
+            "real site — the request was likely blocked. This is a common issue for "
+            "shared CI runner IPs (e.g. GitHub Actions'), even when the exact same "
+            "code works fine from a home connection. If this keeps happening, this "
+            "scraper may need to run somewhere with a non-datacenter IP (e.g. a "
+            "self-hosted runner), or via a JS-capable fetcher that can pass the "
+            "challenge."
+        )
+    else:
+        snippet = re.sub(r"\s+", " ", first_page_html[:300]).strip()
+        print(f"First 300 chars of the response, for debugging: {snippet!r}")
     raise SystemExit(1)
 
 page = 1
