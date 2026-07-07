@@ -17,13 +17,16 @@ this:
        - All-day events: similar name + similar venue, no day
          requirement — instead, all the days seen are collapsed into one
          event spanning from the earliest to the latest date seen (e.g.
-         a multi-day market or exhibition listed as separate single-day
-         entries by different sources). To avoid accidentally collapsing
-         a whole year of a recurring weekly listing into one giant
-         "event", this span-merge only applies when the earliest and
-         latest dates are within MAX_ALL_DAY_MERGE_SPAN_DAYS of each
-         other; beyond that, it falls back to grouping by exact day
-         instead (recurring instances stay separate).
+         a multi-day market, festival, or exhibition listed as separate
+         single-day entries by different sources, or even by one source
+         that lists each day of a run separately). To avoid accidentally
+         collapsing a whole year of a recurring weekly listing into one
+         giant "event", dates are only merged into a span if they're
+         contiguous (gaps of at most MAX_ALL_DAY_GAP_DAYS between
+         consecutive dates) — a 3-week daily event has zero-day gaps and
+         merges into one span; a weekly recurring listing has ~7-day gaps
+         and stays as separate occurrences, regardless of how wide the
+         earliest-to-latest spread is in either case.
      When two "same event" listings come from the *same* source file,
      they're treated as duplicate listings of one source (not
      independent confirmation) and only one is kept, rather than being
@@ -64,10 +67,16 @@ DEFAULT_EVENT_DURATION = timedelta(hours=3)
 NAME_SIMILARITY_THRESHOLD = 0.75
 VENUE_SIMILARITY_THRESHOLD = 0.75
 
-# All-day events with the same name+venue but dates further apart than
-# this are treated as separate (likely recurring) occurrences instead of
-# being collapsed into one multi-day spanning event.
-MAX_ALL_DAY_MERGE_SPAN_DAYS = 14
+# All-day events with the same name+venue are merged into one spanning
+# event only where their dates are contiguous — i.e. the gap between
+# consecutive dates (once sorted) is at most this many days. This
+# distinguishes a genuinely continuous multi-day run (gap = 1 day, or 0
+# for overlapping reports) from a recurring weekly/monthly listing (gap
+# ~= 7+ days), regardless of how wide the overall first-to-last spread
+# is in either case. A small tolerance above 1 allows for a source
+# missing a day here and there without splitting an otherwise-continuous
+# run into fragments.
+MAX_ALL_DAY_GAP_DAYS = 2
 
 
 # --------------------------------------------------------------------------
@@ -298,6 +307,21 @@ def _dedupe_same_source(items):
 # Fuzzy clustering (shared by both the timed and all-day passes)
 # --------------------------------------------------------------------------
 
+def _group_into_contiguous_runs(sorted_dates, max_gap_days):
+    """Split a sorted list of unique dates into runs where consecutive
+    dates are at most `max_gap_days` apart. Returns a list of date lists."""
+    runs = []
+    current_run = [sorted_dates[0]]
+    for d in sorted_dates[1:]:
+        if (d - current_run[-1]).days <= max_gap_days:
+            current_run.append(d)
+        else:
+            runs.append(current_run)
+            current_run = [d]
+    runs.append(current_run)
+    return runs
+
+
 def _cluster_by_name_and_venue(items):
     """Greedily group [(source, vevent), ...] into clusters where every
     member has a similar title and similar venue to the cluster's first
@@ -472,15 +496,13 @@ def build_merged_calendar(events):
                 output_items.append((deduped[0][1], False))
 
         if allday_only_days:
-            span_days = (max(allday_only_days) - min(allday_only_days)).days
-            if len(allday_only_days) > 1 and span_days <= MAX_ALL_DAY_MERGE_SPAN_DAYS:
-                raw_items = [item for d in allday_only_days for item in by_day[d]]
-                output_items.append((merge_allday_group(raw_items), True))
-            else:
-                # Either a single all-day-only day, or a spread too wide
-                # to be one continuous event (e.g. a weekly recurring
-                # listing) -- keep each day separate instead.
-                for d in allday_only_days:
+            sorted_days = sorted(set(allday_only_days))
+            for run in _group_into_contiguous_runs(sorted_days, MAX_ALL_DAY_GAP_DAYS):
+                if len(run) > 1:
+                    raw_items = [item for d in run for item in by_day[d]]
+                    output_items.append((merge_allday_group(raw_items), True))
+                else:
+                    d = run[0]
                     deduped = _dedupe_same_source(by_day[d])
                     if len(deduped) > 1:
                         output_items.append((merge_group(deduped), True))
