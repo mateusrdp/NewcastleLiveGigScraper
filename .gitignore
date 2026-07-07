@@ -1,3 +1,4 @@
 calendars/*.ics
+!calendars/recurring_events.ics
 .vscode/
 src/__pycache__/*

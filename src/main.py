@@ -31,11 +31,29 @@ CALENDARS_DIR = PROJECT_ROOT / "calendars"
 FILTERS_DIR = PROJECT_ROOT / "filters"
 
 
+PRESERVED_FILES = {"recurring_events.ics"}
+
+
 def wipe_calendars_folder():
+    """Wipe calendars/ before each run, except for files in
+    PRESERVED_FILES -- these are hand-maintained sources (e.g. recurring
+    events no scraper covers) rather than scraper output, so they aren't
+    regenerated and shouldn't be deleted along with everything else."""
+    preserved = {}
     if CALENDARS_DIR.exists():
+        for fname in PRESERVED_FILES:
+            fpath = CALENDARS_DIR / fname
+            if fpath.exists():
+                preserved[fname] = fpath.read_bytes()
         shutil.rmtree(CALENDARS_DIR)
+
     CALENDARS_DIR.mkdir(parents=True)
-    print(f"Wiped '{CALENDARS_DIR}'.")
+
+    for fname, content in preserved.items():
+        (CALENDARS_DIR / fname).write_bytes(content)
+
+    preserved_note = f" (preserved: {', '.join(sorted(preserved))})" if preserved else ""
+    print(f"Wiped '{CALENDARS_DIR}'{preserved_note}.")
 
 
 def discover_scrapers():

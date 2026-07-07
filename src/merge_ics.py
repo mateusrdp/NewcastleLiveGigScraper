@@ -224,6 +224,16 @@ def is_all_day_event(vevent):
     return dtstart is not None and not is_datetime_value(dtstart)
 
 
+def is_recurring_event(vevent):
+    """True if `vevent` has an RRULE (or RDATE) -- i.e. it's a recurring
+    master event, not a single dated occurrence. These are deliberately
+    never merged with anything: merge_group()/merge_allday_group() build
+    a brand-new Event() and don't carry RRULE/RDATE over, so merging a
+    recurring event would silently turn it into a single one-off
+    occurrence and destroy its recurrence rule."""
+    return vevent.get("RRULE") is not None or vevent.get("RDATE") is not None
+
+
 def event_day(vevent):
     """Return the calendar date (a date, never a datetime) an event falls
     on, or None if it has no DTSTART."""
@@ -467,7 +477,9 @@ def build_merged_calendar(events):
     grouped by exact day: a day with any timed item merges everything on
     that day via merge_group() (which picks the most time-specific item
     as the base); a day where every item is all-day-only is set aside as
-    a candidate for the multi-day all-day span-merge instead."""
+    a candidate for the multi-day all-day span-merge instead. Recurring
+    events (anything with an RRULE/RDATE) are passed straight through
+    untouched, never merged with anything -- see is_recurring_event()."""
     cal = Calendar()
     cal.add("prodid", "-//merge-ics//EN")
     cal.add("version", "2.0")
@@ -475,7 +487,14 @@ def build_merged_calendar(events):
     merged_count = 0
     passthrough_count = 0
 
-    for cluster_items in _cluster_by_name_and_venue(events):
+    recurring_events = [(s, v) for s, v in events if is_recurring_event(v)]
+    single_occurrence_events = [(s, v) for s, v in events if not is_recurring_event(v)]
+
+    for _source, vevent in recurring_events:
+        cal.add_component(vevent)
+        passthrough_count += 1
+
+    for cluster_items in _cluster_by_name_and_venue(single_occurrence_events):
         by_day = defaultdict(list)
         for source, vevent in cluster_items:
             by_day[event_day(vevent)].append((source, vevent))
