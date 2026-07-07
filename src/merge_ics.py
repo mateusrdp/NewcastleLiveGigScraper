@@ -369,35 +369,15 @@ def merge_group(group):
     return merged
 
 
-def _cluster_and_merge_timed(timed_events):
-    """Returns a list of (vevent, was_merged) for timed events, grouped
-    by exact day, then fuzzy-matched by name+venue within each day."""
-    results = []
-
-    by_day = defaultdict(list)
-    for source, vevent in timed_events:
-        by_day[event_day(vevent)].append((source, vevent))
-
-    for day, day_items in by_day.items():
-        for cluster_items in _cluster_by_name_and_venue(day_items):
-            deduped = _dedupe_same_source(cluster_items)
-            if len(deduped) > 1:
-                results.append((merge_group(deduped), True))
-            else:
-                results.append((deduped[0][1], False))
-
-    return results
-
-
 # --------------------------------------------------------------------------
-# Merging: all-day events (span-merge)
+# Merging: all-day span-merge
 # --------------------------------------------------------------------------
 
 def merge_allday_group(items):
     """items: list of (source, vevent) for one fuzzy-matched name+venue
-    cluster of all-day events, spanning possibly many dates. Builds one
-    all-day event from the earliest to the latest date seen (ICS all-day
-    DTEND is exclusive, so it's set to latest-date + 1 day)."""
+    cluster of all-day-only events, spanning possibly many dates. Builds
+    one all-day event from the earliest to the latest date seen (ICS
+    all-day DTEND is exclusive, so it's set to latest-date + 1 day)."""
     dates_by_source = defaultdict(set)
     for source, vevent in items:
         dates_by_source[source].add(event_day(vevent))
@@ -444,40 +424,6 @@ def merge_allday_group(items):
     return merged
 
 
-def _cluster_and_merge_allday(allday_events):
-    """Returns a list of (vevent, was_merged) for all-day events. First
-    fuzzy-clusters purely by name+venue (no day requirement). Within a
-    cluster, if the date range fits within MAX_ALL_DAY_MERGE_SPAN_DAYS,
-    it's collapsed into one spanning event; otherwise (e.g. a weekly
-    recurring listing, where "first seen" to "last seen" could be
-    months apart) it falls back to grouping by exact day instead, same
-    as the timed-event pass, so recurring instances stay separate."""
-    results = []
-
-    for cluster_items in _cluster_by_name_and_venue(allday_events):
-        dates = [event_day(v) for _, v in cluster_items]
-        span_days = (max(dates) - min(dates)).days if len(dates) > 1 else 0
-
-        if span_days <= MAX_ALL_DAY_MERGE_SPAN_DAYS:
-            deduped = _dedupe_same_source(cluster_items)
-            if len(deduped) > 1:
-                results.append((merge_allday_group(cluster_items), True))
-            else:
-                results.append((deduped[0][1], False))
-        else:
-            by_day = defaultdict(list)
-            for source, vevent in cluster_items:
-                by_day[event_day(vevent)].append((source, vevent))
-            for day, day_items in by_day.items():
-                deduped = _dedupe_same_source(day_items)
-                if len(deduped) > 1:
-                    results.append((merge_group(deduped), True))
-                else:
-                    results.append((deduped[0][1], False))
-
-    return results
-
-
 # --------------------------------------------------------------------------
 # Top-level merge
 # --------------------------------------------------------------------------
@@ -486,10 +432,18 @@ def build_merged_calendar(events):
     """events: list of (source_filename, vevent) as returned by
     load_events(). Returns a single icalendar.Calendar with duplicate/
     same-event listings merged, per the rules described in this module's
-    docstring."""
-    timed_events = [(s, v) for s, v in events if not is_all_day_event(v)]
-    allday_events = [(s, v) for s, v in events if is_all_day_event(v)]
+    docstring.
 
+    Events are first fuzzy-clustered by name+venue regardless of whether
+    they're timed or all-day — this matters because the same real-world
+    event is often reported as a precise timed listing by one source and
+    a bare all-day placeholder by another (e.g. NewcastleLive only ever
+    gives a date, while Whirlwind gives an exact time); those need to
+    end up as one merged event, not two. Within a cluster, items are then
+    grouped by exact day: a day with any timed item merges everything on
+    that day via merge_group() (which picks the most time-specific item
+    as the base); a day where every item is all-day-only is set aside as
+    a candidate for the multi-day all-day span-merge instead."""
     cal = Calendar()
     cal.add("prodid", "-//merge-ics//EN")
     cal.add("version", "2.0")
@@ -497,15 +451,46 @@ def build_merged_calendar(events):
     merged_count = 0
     passthrough_count = 0
 
-    for vevent, was_merged in _cluster_and_merge_timed(timed_events):
-        cal.add_component(vevent)
-        merged_count += was_merged
-        passthrough_count += not was_merged
+    for cluster_items in _cluster_by_name_and_venue(events):
+        by_day = defaultdict(list)
+        for source, vevent in cluster_items:
+            by_day[event_day(vevent)].append((source, vevent))
 
-    for vevent, was_merged in _cluster_and_merge_allday(allday_events):
-        cal.add_component(vevent)
-        merged_count += was_merged
-        passthrough_count += not was_merged
+        output_items = []  # list of (vevent, was_merged)
+        allday_only_days = []
+
+        for day, day_items in by_day.items():
+            if all(is_all_day_event(v) for _, v in day_items):
+                # No timed item for this day in this cluster -- might
+                # still get folded into a multi-day span below.
+                allday_only_days.append(day)
+                continue
+            deduped = _dedupe_same_source(day_items)
+            if len(deduped) > 1:
+                output_items.append((merge_group(deduped), True))
+            else:
+                output_items.append((deduped[0][1], False))
+
+        if allday_only_days:
+            span_days = (max(allday_only_days) - min(allday_only_days)).days
+            if len(allday_only_days) > 1 and span_days <= MAX_ALL_DAY_MERGE_SPAN_DAYS:
+                raw_items = [item for d in allday_only_days for item in by_day[d]]
+                output_items.append((merge_allday_group(raw_items), True))
+            else:
+                # Either a single all-day-only day, or a spread too wide
+                # to be one continuous event (e.g. a weekly recurring
+                # listing) -- keep each day separate instead.
+                for d in allday_only_days:
+                    deduped = _dedupe_same_source(by_day[d])
+                    if len(deduped) > 1:
+                        output_items.append((merge_group(deduped), True))
+                    else:
+                        output_items.append((deduped[0][1], False))
+
+        for vevent, was_merged in output_items:
+            cal.add_component(vevent)
+            merged_count += was_merged
+            passthrough_count += not was_merged
 
     print(f"Merged {merged_count} event group(s); passed through {passthrough_count} unique event(s).")
     return cal
