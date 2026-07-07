@@ -10,10 +10,25 @@ Also can't guarantee I'll keep this up forever (I won't if GH starts charging me
 
 Other than that... have fun, and might see you at one of these events!
 
+Massive thanks to all sources who made this possible!
+And please do let me know if you don't want your guide featured here! (It's all public data, and free advertisement and exposure for you I guess, and the sources are always all credited, but I do want to respect your boundaries ;) )
+
 Cheers
 
 -Mat.
 
+## Features
+- Gig Guide Scrapers
+  - NewcastleLive: https://newcastlelive.com.au/gig-guide-event-calendar/
+  - NewcastleWeekly: https://newcastleweekly.com.au/the-ultimate-newcastle-gig-guide/
+  - Whirlwind Entertainment: https://whirlwindent.com.au/gigguide.asp
+  - Stag and Hunter Hotel: https://stagandhunter.com.au/upcoming-shows1
+- Recurrent events
+  - Dev controlled
+- Merges all entries for maximum information
+- Calendars filtered by venues name
+  - Dev controlled
+- Multi-day events
+
 ## TODO
-- NewcastleLive: use a more robust fetcher, that works from GH actions
 - Add support for image flyer-only sources (eg: Wicko and Stag)

@@ -1,26 +1,49 @@
 BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//NewcastleLiveGigScraper//recurring_events//EN
+
 BEGIN:VEVENT
-SUMMARY:FACE Comedy @ Stag & Hunter Hotel
+SUMMARY:Punchline Live Comedy @ Stag & Hunter Hotel
 DTSTART;TZID=Australia/Sydney:20260715T193000
-RRULE:FREQ=MONTHLY;BYDAY=1WE,3WE
+RRULE:FREQ=MONTHLY;BYDAY=1WE
 LOCATION:Stag & Hunter Hotel
-DESCRIPTION:Regular comedy night, held on the 1st and 3rd Wednesday of each month.
-Note: This is a recurrent event! Check if actually happening!
+DESCRIPTION: Regular comedy night, held on the 1st Wednesday of each month.
+https://www.facebook.com/faceopenmic/
+Free entry
+$50 bistro voucher giveaway
+Note: This is a recurring event! Check if actually happening!
 If this stopped forever, or changed, please inform me!
 UID:recurring-face-comedy@staghunter
 DTSTAMP:20260707T000000Z
 END:VEVENT
+
 BEGIN:VEVENT
 SUMMARY:Merewether Fats Blues Jam @ Stag & Hunter Hotel
 DTSTART;TZID=Australia/Sydney:20260716T193000
 RRULE:FREQ=MONTHLY;BYDAY=1TH,3TH
 LOCATION:Stag & Hunter Hotel
 DESCRIPTION:Regular blues jam night, held on the 1st and 3rd Thursday of each month.
-Note: This is a recurrent event! Check if actually happening!
+https://www.facebook.com/merewetherfatsbluesjam/
+Free entry
+BYO Instrument, NO PEDALS.
+Note: This is a recurring event! Check if actually happening!
 If this stopped forever, or changed, please inform me!
 UID:recurring-merewether-fats-blues-jam@staghunter
 DTSTAMP:20260707T000000Z
 END:VEVENT
+
+BEGIN:VEVENT
+SUMMARY:Temple of the Stag @ Stag & Hunter Hotel
+DTSTART;TZID=Australia/Sydney:20260716T193000
+RRULE:FREQ=MONTHLY;BYDAY=1MO,3MO
+LOCATION:Stag & Hunter Hotel
+DESCRIPTION:Regular 90s Grunge Jam night, held every 1st and 3rd Monday of each month.
+https://www.instagram.com/templeofthestag/
+Free entry. BYO Instrument. Remember to inform the band what you wanna play on their Insta!
+Note: This is a recurring event! Check if actually happening!
+If this stopped forever, or changed, please inform me!
+UID:recurring-temple-of-the-stag@staghunter
+DTSTAMP:20260707T000000Z
+END:VEVENT
+
 END:VCALENDAR
