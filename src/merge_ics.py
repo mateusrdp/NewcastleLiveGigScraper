@@ -56,6 +56,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from icalendar import Calendar, Event
+from dateutil.rrule import rrulestr
 
 SYDNEY_TZ = ZoneInfo("Australia/Sydney")
 
@@ -232,6 +233,72 @@ def is_recurring_event(vevent):
     recurring event would silently turn it into a single one-off
     occurrence and destroy its recurrence rule."""
     return vevent.get("RRULE") is not None or vevent.get("RDATE") is not None
+
+
+def recurring_event_occurs_on(recurring_vevent, target_date):
+    """True if `recurring_vevent`'s RRULE actually produces an occurrence
+    landing on `target_date` (compared in whatever zone its DTSTART is
+    in). Returns False (rather than raising) if the RRULE can't be
+    parsed, so one malformed recurring event can't crash the whole run."""
+    dtstart_prop = recurring_vevent.get("DTSTART")
+    rrule_prop = recurring_vevent.get("RRULE")
+    if dtstart_prop is None or rrule_prop is None:
+        return False
+
+    dtstart_dt = dtstart_prop.dt
+    if not isinstance(dtstart_dt, datetime):
+        dtstart_dt = datetime(dtstart_dt.year, dtstart_dt.month, dtstart_dt.day)
+
+    try:
+        rrule_text = rrule_prop.to_ical().decode("utf-8")
+        rule = rrulestr(f"RRULE:{rrule_text}", dtstart=dtstart_dt)
+    except Exception as e:
+        print(f"Warning: could not parse RRULE on '{event_name(recurring_vevent)}': {e}", file=sys.stderr)
+        return False
+
+    range_start = datetime.combine(target_date, datetime.min.time())
+    range_end = datetime.combine(target_date, datetime.max.time())
+    if dtstart_dt.tzinfo is not None:
+        range_start = range_start.replace(tzinfo=dtstart_dt.tzinfo)
+        range_end = range_end.replace(tzinfo=dtstart_dt.tzinfo)
+
+    try:
+        return len(rule.between(range_start, range_end, inc=True)) > 0
+    except Exception as e:
+        print(f"Warning: could not evaluate RRULE on '{event_name(recurring_vevent)}': {e}", file=sys.stderr)
+        return False
+
+
+def extract_new_info(scraped_vevent, recurring_vevent):
+    """Return a short string describing info found in `scraped_vevent`'s
+    DESCRIPTION that isn't already present in `recurring_vevent`'s, or
+    None if there's nothing new worth keeping. Deliberately narrow (just
+    a price mention and any URLs not already present) rather than trying
+    to diff full descriptions -- easy to apply safely as a short
+    addendum, unlike trying to merge two free-text descriptions."""
+    scraped_desc = str(scraped_vevent.get("DESCRIPTION") or "")
+    recurring_desc = str(recurring_vevent.get("DESCRIPTION") or "")
+
+    new_bits = []
+
+    price_match = re.search(r"\$\s?\d+(?:\.\d{2})?", scraped_desc)
+    if price_match and price_match.group(0) not in recurring_desc:
+        new_bits.append(f"Price seen: {price_match.group(0)}")
+
+    scraped_urls = re.findall(r"https?://\S+", scraped_desc)
+    new_urls = []
+    seen_urls = set()
+    for url in scraped_urls:
+        url = url.rstrip(".,)")
+        if url not in recurring_desc and url not in seen_urls:
+            seen_urls.add(url)
+            new_urls.append(url)
+    if new_urls:
+        new_bits.append("Link(s): " + ", ".join(new_urls))
+
+    if not new_bits:
+        return None
+    return "; ".join(new_bits)
 
 
 def event_day(vevent):
@@ -489,6 +556,55 @@ def build_merged_calendar(events):
 
     recurring_events = [(s, v) for s, v in events if is_recurring_event(v)]
     single_occurrence_events = [(s, v) for s, v in events if not is_recurring_event(v)]
+
+    # A single-occurrence listing (e.g. a scraped one-off) that's really
+    # just this run's instance of a recurring event (same name, same
+    # venue, and its date matches one of the recurring event's actual
+    # RRULE-generated occurrences -- not just a coincidental same
+    # DTSTART) is never merged in or kept alongside it: the recurring
+    # event always wins, unexpanded, as the single surviving event.
+    # Different scraped duplicates are checked independently (a site
+    # without true recurrence support will list each month's occurrence
+    # separately, possibly with different ticket links each time), and
+    # if one has info the recurring listing doesn't (a price, a link),
+    # that's appended to the recurring event's own DESCRIPTION in place
+    # before the scraped duplicate is discarded -- never the other way
+    # around, and the recurring event is never split into per-date
+    # copies.
+    filtered_single_events = []
+    for source, vevent in single_occurrence_events:
+        day = event_day(vevent)
+        matched_recurring = None
+        if day is not None:
+            for _, recurring_vevent in recurring_events:
+                if not _similar(event_title_only(vevent), event_title_only(recurring_vevent), NAME_SIMILARITY_THRESHOLD):
+                    continue
+                if not _similar(event_venue_raw(vevent), event_venue_raw(recurring_vevent), VENUE_SIMILARITY_THRESHOLD):
+                    continue
+                if recurring_event_occurs_on(recurring_vevent, day):
+                    matched_recurring = recurring_vevent
+                    break
+
+        if matched_recurring is None:
+            filtered_single_events.append((source, vevent))
+            continue
+
+        new_info = extract_new_info(vevent, matched_recurring)
+        if new_info:
+            existing_desc = str(matched_recurring.get("DESCRIPTION") or "")
+            addition = f"[Additional info from {source}, seen {day.isoformat()}]: {new_info}"
+            if addition not in existing_desc:
+                new_desc = f"{existing_desc}\n\n{addition}" if existing_desc else addition
+                if "DESCRIPTION" in matched_recurring:
+                    del matched_recurring["DESCRIPTION"]
+                matched_recurring.add("DESCRIPTION", new_desc)
+            print(f"Enriched recurring event '{event_name(matched_recurring)}' with new info from "
+                  f"'{event_name(vevent)}' ({source}, {day}); discarding the scraped duplicate.")
+        else:
+            print(f"Discarding '{event_name(vevent)}' from {source} on {day}: duplicates recurring "
+                  f"event '{event_name(matched_recurring)}' with no new info to add.")
+
+    single_occurrence_events = filtered_single_events
 
     for _source, vevent in recurring_events:
         cal.add_component(vevent)

@@ -2,3 +2,4 @@ calendars/*.ics
 !calendars/recurring_events.ics
 .vscode/
 src/__pycache__/*
+*.kate-swp
