@@ -1,32 +1,34 @@
 """
-Scrapes Whirlwind Entertainment's weekly gig guide and writes
+Scrapes Whirlwind Entertainment's full gig guide and writes
 calendars/whirlwind.ics.
 
-The page (a classic server-rendered .asp page, not a JS single-page app)
-lists one or more date-separator headings in the format:
+This uses https://whirlwindent.com.au/gigguide.asp, which lists far more
+events than the old weeklygigguide.asp page (which this replaces) and
+has a completely different structure: a plain HTML table, one row per
+gig, with four columns:
 
-    "Sunday, 5 July 2026"
+    Weekday DD/MM  |  ACT NAME  |  VENUE NAME  |  TIME
 
-(each preceded by a decorative emoji, e.g. an emoji for weather/day).
-Each date heading is followed by a run of gig "cards", each rendered as
-a short sequence of text fragments:
+e.g. "Wed 08/07 | JESSIE-MAY K | HOTEL ELERMORE | 7.00PM". No year is
+given (like the weekly guide's date headers, this needs guessing based
+on today's date), and act/venue names are in ALL CAPS in the source --
+left as-is here rather than guessing at a "corrected" casing, since
+that risks mangling genuine acronyms/stylised names (e.g. "DJ ...",
+"CC LEE", "T N R BAND").
 
-    🎤                      <- a small icon (mic/headphones/etc.)
-    Dai Pritchard           <- artist/act name
-    📍 Anna Bay Tavern      <- venue, pin-icon prefixed
-    🕒 3:00 PM              <- time, clock-icon prefixed
+The data is also visibly messier than the weekly guide's: real examples
+seen include time-column typos ("PM.009", "9.00PPM", "2.0PM"), blank
+times, "TBA", and even a stray "$45.00" (clearly a price that ended up
+in the time column by mistake on the site's end). Anything that doesn't
+cleanly parse as a time falls back to an all-day event, with the raw
+text preserved in the description for transparency, rather than
+guessing at a corrected time.
 
-(Venue and time sometimes render as two lines, sometimes as one line
-with both icons — this scraper handles both.)
-
-Rather than depending on guessed CSS class names (which weren't visible
-to inspect ahead of time), this scraper works off the flattened,
-document-order text content of the page (BeautifulSoup's
-`stripped_strings`) and recognizes each fragment by its distinctive
-emoji marker. This is more resilient to markup changes than brittle
-selectors, at the cost of relying on the emoji markers staying put — if
-the site redesigns and drops/changes those icons, this will need an
-update.
+Rather than depending on guessed CSS classes for the table (not visible
+to inspect ahead of time), rows are found by content shape: any <tr>
+with exactly 4 cells whose first cell matches the "Weekday DD/MM"
+pattern. This also means header/footer rows are skipped automatically,
+since they won't match that pattern.
 
 This script is run by src/main.py as one of several scrapers. It is
 expected to be executed with the project root as the working directory
@@ -53,71 +55,65 @@ import requests
 from bs4 import BeautifulSoup
 from icalendar import Calendar, Event
 
-GUIDE_URL = "https://whirlwindent.com.au/weeklygigguide.asp"
+GUIDE_URL = "https://whirlwindent.com.au/gigguide.asp"
 
 SYDNEY_TZ = ZoneInfo("Australia/Sydney")
 
-FULL_MONTHS = {
-    "january": 1, "february": 2, "march": 3, "april": 4,
-    "may": 5, "june": 6, "july": 7, "august": 8,
-    "september": 9, "october": 10, "november": 11, "december": 12,
-}
+# "Wed 08/07" -- weekday abbreviation (unused beyond pattern-matching;
+# not cross-checked against the computed date) + DD/MM, no year.
+DATE_RE = re.compile(r"^[A-Za-z]{3}\s+(\d{1,2})/(\d{1,2})$")
 
-# "Sunday, 5 July 2026" (year is given explicitly on this site, unlike
-# some other gig guides, so no year-guessing is needed here).
-DATE_HEADER_RE = re.compile(r"^([A-Za-z]+),\s+(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$")
-
-TIME_RE = re.compile(r"(\d{1,2}):(\d{2})\s*(am|pm)", re.IGNORECASE)
-
-VENUE_MARKER = "📍"
-TIME_MARKER = "🕒"
-
-# Once we've started capturing gigs, hitting this exact text marks the
-# end of the gig-guide section and the start of the page footer.
-STOP_MARKER = "Whirlwind Entertainment"
+# "7.00PM", "9.30AM", tolerant of 1-2 digit minutes (e.g. the real typo
+# "2.0PM" seen in source data, read as 2:00pm).
+TIME_RE = re.compile(r"(\d{1,2})[.:](\d{1,2})\s*([AaPp][Mm])")
 
 session = requests.Session()
 session.headers.update({
-    "User-Agent": "Mozilla/5.0"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
 })
 
 
-def strip_leading_symbols(text):
-    """Strip any leading emoji/punctuation (e.g. a weather icon) so a
-    date heading like "☀️Sunday, 5 July 2026" becomes "Sunday, 5 July
-    2026" for regex matching."""
-    return re.sub(r"^[^A-Za-z]+", "", text).strip()
+def guess_year(month, today=None):
+    """The guide lists dates without a year. If the month has already
+    passed relative to today, assume the listing is for next year."""
+    today = today or datetime.now()
+    year = today.year
+    if month < today.month:
+        year += 1
+    return year
 
 
-def parse_date_header(text):
-    """Parse "Sunday, 5 July 2026" into a date object, or None if `text`
-    isn't a date header."""
-    match = DATE_HEADER_RE.match(strip_leading_symbols(text))
+def parse_date_cell(text):
+    """Parse "Wed 08/07" into a date object, or None if `text` doesn't
+    look like a date cell at all."""
+    match = DATE_RE.match(text.strip())
     if not match:
         return None
 
-    _weekday, day, month_name, year = match.groups()
-    month = FULL_MONTHS.get(month_name.lower())
-    if not month:
-        return None
-
+    day, month = int(match.group(1)), int(match.group(2))
+    year = guess_year(month)
     try:
-        return date(int(year), month, int(day))
+        return date(year, month, day)
     except ValueError:
         return None
 
 
 def parse_time_text(time_text):
-    """Return (hour, minute) for a parseable time (including
-    "noon"/"midday"/"midnight"), else None."""
+    """Return (hour, minute) for a parseable time, else None for blank
+    cells, "TBA", a stray price, or anything else that doesn't cleanly
+    match. Deliberately conservative -- garbled input falls back to an
+    all-day event rather than risking a wrong guess."""
     if not time_text:
         return None
 
-    t = time_text.strip().lower()
-    if t in ("noon", "midday"):
-        return (12, 0)
-    if t == "midnight":
-        return (0, 0)
+    t = time_text.strip()
+    if not t or t.upper() in ("TBA", "TBC", "N/A"):
+        return None
+    if t.startswith("$"):
+        # Seen in real data: a price sitting in the time column by
+        # mistake on the site's end.
+        return None
 
     match = TIME_RE.search(t)
     if not match:
@@ -125,105 +121,63 @@ def parse_time_text(time_text):
 
     hour = int(match.group(1))
     minute = int(match.group(2))
-    meridiem = match.group(3).lower()
-    if meridiem == "pm" and hour != 12:
+    is_pm = match.group(3).upper().startswith("P")
+
+    if hour > 23 or minute > 59:
+        return None
+
+    if is_pm and hour != 12:
         hour += 12
-    if meridiem == "am" and hour == 12:
+    if not is_pm and hour == 12:
         hour = 0
+
     return (hour, minute)
 
 
-def is_icon_only(line):
-    """True if `line` is just a decorative icon/emoji with no letters —
-    used to detect the start of a new gig card."""
-    return bool(line) and len(line) <= 8 and not re.search(r"[A-Za-z]", line)
-
-
-def parse_lines(lines, source_url):
-    """Walk the flattened, document-order text fragments of the page
-    and pull out (title, venue, date, time_text) dicts for each gig."""
-    events = []
-    current_date = None
-    started = False
-    i = 0
-    n = len(lines)
-
-    while i < n:
-        line = lines[i]
-
-        parsed_date = parse_date_header(line)
-        if parsed_date:
-            current_date = parsed_date
-            started = True
-            i += 1
-            continue
-
-        if not started:
-            i += 1
-            continue
-
-        if line == STOP_MARKER:
-            break
-
-        if is_icon_only(line):
-            if i + 1 >= n:
-                break
-            title = lines[i + 1]
-
-            venue_text = ""
-            time_text = ""
-            j = i + 2
-            lookahead_limit = min(j + 2, n)
-            while j < lookahead_limit:
-                candidate = lines[j]
-                if VENUE_MARKER in candidate:
-                    if TIME_MARKER in candidate:
-                        venue_part, _, time_part = candidate.partition(TIME_MARKER)
-                        venue_text = venue_part.replace(VENUE_MARKER, "").strip()
-                        time_text = time_part.strip()
-                    else:
-                        venue_text = candidate.replace(VENUE_MARKER, "").strip()
-                    j += 1
-                elif TIME_MARKER in candidate:
-                    time_text = candidate.replace(TIME_MARKER, "").strip()
-                    j += 1
-                else:
-                    break
-
-            if venue_text and current_date and title:
-                events.append({
-                    "title": title,
-                    "venue": venue_text,
-                    "date": current_date,
-                    "time_text": time_text,
-                })
-                i = j
+def extract_gig_rows(soup):
+    """Find every table row that looks like a gig listing (exactly 4
+    cells, first one a "Weekday DD/MM" date), anywhere on the page."""
+    rows = []
+    for table in soup.find_all("table"):
+        for tr in table.find_all("tr"):
+            cells = tr.find_all(["td", "th"])
+            if len(cells) != 4:
                 continue
 
-        # Doesn't match any recognized fragment — skip a single line
-        # (e.g. a stray "25 gigs" counter) and keep going.
-        i += 1
+            texts = [c.get_text(" ", strip=True) for c in cells]
+            event_date = parse_date_cell(texts[0])
+            if not event_date:
+                continue
 
-    return events
+            title, venue, time_text = texts[1], texts[2], texts[3]
+            if not title or not venue:
+                continue
+
+            rows.append({
+                "title": title,
+                "venue": venue,
+                "date": event_date,
+                "time_text": time_text,
+            })
+
+    return rows
 
 
 def scrape_gig_guide(url):
-    r = session.get(url)
+    r = session.get(url, timeout=20)
     if not r.ok:
         print(f"Error: GET {url} returned {r.status_code} {r.reason}")
         save_debug_page("whirlwind", "http_error", r.text)
         return []
 
     soup = BeautifulSoup(r.text, "html.parser")
-    lines = list(soup.stripped_strings)
-    events = parse_lines(lines, url)
+    rows = extract_gig_rows(soup)
 
-    if not events:
-        # Could be a genuinely quiet day, or the page structure changed —
-        # worth a look either way.
+    if not rows:
+        print("Warning: no gig rows found -- page structure may have changed.")
         save_debug_page("whirlwind", "zero_events_parsed", r.text)
 
-    return events
+    return rows
 
 
 def build_calendar(events, source_url):

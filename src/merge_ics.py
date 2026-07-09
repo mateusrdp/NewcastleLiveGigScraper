@@ -52,7 +52,7 @@ import os
 import re
 import sys
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from icalendar import Calendar, Event
@@ -78,6 +78,23 @@ VENUE_SIMILARITY_THRESHOLD = 0.75
 # missing a day here and there without splitting an otherwise-continuous
 # run into fragments.
 MAX_ALL_DAY_GAP_DAYS = 2
+
+# Scraped events that are really just an un-recognized recurring series
+# (a site without true recurrence support listing "every Sunday market"
+# or "1st and 3rd Monday grunge night" as separate one-off entries each
+# time) are auto-detected and collapsed into a single synthesized
+# recurring event, PROVIDED:
+#   - same exact SUMMARY, same exact LOCATION, same weekday every time
+#     (deliberately exact, not fuzzy -- this feature actively discards
+#     data if it fires incorrectly, so it's held to a higher bar than
+#     the regular fuzzy merge).
+#   - at least this many distinct occurrences...
+MIN_OCCURRENCES_FOR_AUTO_RECURRENCE = 3
+#   - ...spanning at least this many days between the earliest and
+#     latest occurrence seen (i.e. at least ~4 weeks of regularity).
+MIN_SPAN_DAYS_FOR_AUTO_RECURRENCE = 28
+
+WEEKDAY_CODES = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
 
 
 # --------------------------------------------------------------------------
@@ -267,6 +284,89 @@ def recurring_event_occurs_on(recurring_vevent, target_date):
     except Exception as e:
         print(f"Warning: could not evaluate RRULE on '{event_name(recurring_vevent)}': {e}", file=sys.stderr)
         return False
+
+
+def _nth_weekday_of_month(d):
+    """Return the 1-based ordinal of date `d`'s weekday within its
+    month (e.g. 3 for the 3rd Wednesday)."""
+    return (d.day - 1) // 7 + 1
+
+
+def detect_monthly_nth_weekday_pattern(dates):
+    """Given a list of dates for events sharing an exact SUMMARY and
+    LOCATION, look for a confident "same Nth weekday(s) of the month"
+    pattern -- e.g. every Sunday (all/most ordinals present) or every
+    1st and 3rd Monday (just {1, 3}). Returns an RRULE dict suitable for
+    Event.add("RRULE", ...), or None if there's nothing confident to
+    report.
+
+    Requires every date to fall on the same weekday -- which, as a side
+    effect, already guarantees every pair of dates is a whole multiple
+    of 7 days apart, so there's no separate gap check needed -- plus at
+    least MIN_OCCURRENCES_FOR_AUTO_RECURRENCE dates spanning at least
+    MIN_SPAN_DAYS_FOR_AUTO_RECURRENCE days."""
+    sorted_dates = sorted(set(dates))
+    if len(sorted_dates) < MIN_OCCURRENCES_FOR_AUTO_RECURRENCE:
+        return None
+    if (sorted_dates[-1] - sorted_dates[0]).days < MIN_SPAN_DAYS_FOR_AUTO_RECURRENCE:
+        return None
+
+    weekdays = {d.weekday() for d in sorted_dates}
+    if len(weekdays) != 1:
+        return None
+    weekday = next(iter(weekdays))
+
+    ordinals = sorted({_nth_weekday_of_month(d) for d in sorted_dates})
+    byday = [f"{n}{WEEKDAY_CODES[weekday]}" for n in ordinals]
+    return {"FREQ": "MONTHLY", "BYDAY": byday}
+
+
+def synthesize_recurring_event(items, rrule_dict):
+    """items: list of (source, vevent) all sharing the exact same
+    SUMMARY and LOCATION, confidently detected as recurring on the same
+    Nth weekday(s) of the month. Builds ONE recurring master event
+    (never expanded into per-date copies) anchored on the earliest
+    occurrence, carrying over its time-of-day if it had one."""
+    sorted_items = sorted(items, key=lambda item: event_day(item[1]))
+    representative_source, representative = sorted_items[0]
+
+    name = event_name(representative)
+    venue = event_venue_raw(representative)
+    anchor_date = event_day(representative)
+
+    merged = Event()
+    merged.add("SUMMARY", name)
+    if venue:
+        merged.add("LOCATION", venue)
+
+    dtstart_prop = representative.get("DTSTART")
+    if dtstart_prop is not None and is_datetime_value(dtstart_prop):
+        anchor_time = dtstart_prop.dt.timetz()
+        merged.add("DTSTART", datetime.combine(anchor_date, anchor_time))
+    else:
+        merged.add("DTSTART", anchor_date)
+
+    merged.add("RRULE", rrule_dict)
+
+    dates_seen = sorted({event_day(v) for _, v in items})
+    sources_seen = sorted({s for s, _ in items})
+    # Deliberately no per-occurrence dates here -- the individual scraped
+    # events this was built from are about to be discarded, so their
+    # specific dates would just be misleading clutter, not useful info.
+    disclaimer = (
+        f"[Auto-detected recurring event, based on {len(dates_seen)} occurrence(s) "
+        f"(same weekday each time) from: {', '.join(sources_seen)}. Please verify "
+        f"this is accurate -- if the schedule is wrong or has ended, consider "
+        f"correcting it via recurring_events.ics instead.]"
+    )
+    original_desc = str(representative.get("DESCRIPTION") or "")
+    merged.add("DESCRIPTION", f"{disclaimer}\n\n{original_desc}" if original_desc else disclaimer)
+
+    merged.add("DTSTAMP", datetime.now(timezone.utc))
+    uid_seed = f"{name}|{venue}".encode("utf-8")
+    merged.add("UID", f"autorecur-{hashlib.md5(uid_seed).hexdigest()}@merge-ics")
+
+    return merged
 
 
 def extract_new_info(scraped_vevent, recurring_vevent):
@@ -592,7 +692,7 @@ def build_merged_calendar(events):
         new_info = extract_new_info(vevent, matched_recurring)
         if new_info:
             existing_desc = str(matched_recurring.get("DESCRIPTION") or "")
-            addition = f"[Additional info from {source}, seen {day.isoformat()}]: {new_info}"
+            addition = f"[Additional info from {source}]: {new_info}"
             if addition not in existing_desc:
                 new_desc = f"{existing_desc}\n\n{addition}" if existing_desc else addition
                 if "DESCRIPTION" in matched_recurring:
@@ -605,6 +705,37 @@ def build_merged_calendar(events):
                   f"event '{event_name(matched_recurring)}' with no new info to add.")
 
     single_occurrence_events = filtered_single_events
+
+    # Some scraped events are really just an un-recognized recurring
+    # series -- a site with no true recurrence support listing "every
+    # Sunday market" or "1st and 3rd Monday grunge night" as separate
+    # one-off entries every time it's scraped. Detected via an EXACT
+    # (not fuzzy) match on SUMMARY + LOCATION, since collapsing several
+    # events into one synthesized recurring event throws away their
+    # individual detail, so this is held to a much higher bar than the
+    # regular merge. See detect_monthly_nth_weekday_pattern().
+    exact_match_groups = defaultdict(list)
+    for source, vevent in single_occurrence_events:
+        exact_match_groups[(event_name(vevent), event_venue_raw(vevent))].append((source, vevent))
+
+    auto_recurring_events = []
+    remaining_single_events = []
+    for (name, venue), items in exact_match_groups.items():
+        dates = [event_day(v) for _, v in items]
+        rrule_dict = detect_monthly_nth_weekday_pattern(dates)
+        if rrule_dict:
+            auto_recurring_events.append(synthesize_recurring_event(items, rrule_dict))
+            print(f"Detected recurring pattern for '{name}' @ '{venue}': {rrule_dict} "
+                  f"from {len(set(dates))} occurrence(s); synthesizing one recurring event "
+                  f"instead of keeping them separate.")
+        else:
+            remaining_single_events.extend(items)
+
+    single_occurrence_events = remaining_single_events
+
+    for vevent in auto_recurring_events:
+        cal.add_component(vevent)
+        merged_count += 1
 
     for _source, vevent in recurring_events:
         cal.add_component(vevent)
