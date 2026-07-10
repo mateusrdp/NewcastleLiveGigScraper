@@ -530,23 +530,26 @@ def synthesize_recurring_event(items, rrule_dict):
 
     merged.add("RRULE", rrule_dict)
 
+    # The representative event's own description is used as-is -- no
+    # disclaimer or detection metadata gets added here. Subscribers see
+    # this in their calendar app; they don't care how it was assembled,
+    # only devs/maintainers might. That audit info (occurrence count,
+    # contributing sources) goes in COMMENT instead, which calendar apps
+    # don't surface to end users, consistent with how merge_group() and
+    # merge_allday_group() already record their own "merged from"
+    # metadata. It's also already printed to the pipeline log when this
+    # detection fires, for anyone actively watching a run.
+    original_desc = str(representative.get("DESCRIPTION") or "")
+    merged.add("DESCRIPTION", original_desc)
+
     dates_seen = sorted({event_day(v) for _, v in items})
     sources_seen = sorted({s for s, _ in items})
-    # Deliberately no per-occurrence dates here -- the individual scraped
-    # events this was built from are about to be discarded, so their
-    # specific dates would just be misleading clutter, not useful info.
-    disclaimer = (
-        f"[Auto-detected recurring event, based on {len(dates_seen)} occurrence(s) "
-        f"(same weekday each time) from: {', '.join(sources_seen)}. Please verify "
-        f"this is accurate -- if the schedule is wrong or has ended, consider "
-        f"correcting it via recurring_events.ics instead.]"
-    )
-    original_desc = str(representative.get("DESCRIPTION") or "")
-    merged.add("DESCRIPTION", f"{disclaimer}\n\n{original_desc}" if original_desc else disclaimer)
 
     merged.add("DTSTAMP", datetime.now(timezone.utc))
     uid_seed = f"{name}|{venue}".encode("utf-8")
     merged.add("UID", f"autorecur-{hashlib.md5(uid_seed).hexdigest()}@merge-ics")
+    merged.add("COMMENT", f"Auto-detected recurring event from {len(dates_seen)} occurrence(s); "
+               f"sources: {', '.join(sources_seen)}")
 
     return merged
 
