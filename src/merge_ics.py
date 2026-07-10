@@ -147,6 +147,48 @@ def apply_default_duration(vevent):
     vevent.add("DTEND", dtstart.dt + DEFAULT_EVENT_DURATION)
 
 
+_WORD_RE = re.compile(r"[A-Za-z0-9']+")
+
+
+def title_case_text(text):
+    """Title-case `text` so each word has only its first letter
+    capitalised (e.g. "MY EVENTS @ THE PUB" -> "My Events @ The Pub").
+
+    Words are split on spaces, hyphens, and other punctuation (so
+    "AREA-51" -> "Area-51"), but NOT on apostrophes -- unlike Python's
+    built-in str.title(), which wrongly re-capitalizes the letter right
+    after an apostrophe (e.g. "O'BRIEN'S".title() -> "O'Brien'S" instead
+    of the correct-looking "O'brien's").
+
+    Known tradeoff: this also flattens genuine acronyms found in
+    ALL-CAPS source data (e.g. "DJ" -> "Dj"), since there's no reliable
+    way to tell an intentional acronym apart from a site's habit of
+    just writing everything in capitals.
+    """
+    if not text:
+        return text
+
+    def fix_word(match):
+        word = match.group(0)
+        return word[0].upper() + word[1:].lower()
+
+    return _WORD_RE.sub(fix_word, text)
+
+
+def apply_title_case(vevent):
+    """Rewrite SUMMARY and LOCATION on `vevent` in place via
+    title_case_text(). Deliberately doesn't touch DESCRIPTION, since
+    that's free text (sentences, addresses, URLs) where word-by-word
+    title-casing would do more harm than good."""
+    for field in ("SUMMARY", "LOCATION"):
+        value = vevent.get(field)
+        if value is None:
+            continue
+        new_value = title_case_text(str(value))
+        del vevent[field]
+        vevent.add(field, new_value)
+
+
 # Some ICS writers emit a bare 8-digit date like "DTSTART:20260717"
 # without the ";VALUE=DATE" parameter RFC 5545 requires to disambiguate
 # it from a (malformed) DATE-TIME. The `icalendar` library correctly
@@ -193,6 +235,7 @@ def load_events(folder):
         for component in cal.walk("VEVENT"):
             normalize_timezone(component)
             apply_default_duration(component)
+            apply_title_case(component)
             events.append((fname, component))
             count += 1
         print(f"  {fname}: {count} event(s)")
@@ -284,6 +327,90 @@ def recurring_event_occurs_on(recurring_vevent, target_date):
     except Exception as e:
         print(f"Warning: could not evaluate RRULE on '{event_name(recurring_vevent)}': {e}", file=sys.stderr)
         return False
+
+
+def _parse_byday_list(rrule_prop):
+    """Extract the BYDAY value list (e.g. ["1MO", "3MO"], or ["SU"] for
+    a plain "every Sunday" rule) from an RRULE property, or None if it
+    doesn't have a BYDAY / can't be parsed."""
+    try:
+        rrule_text = rrule_prop.to_ical().decode("utf-8")
+    except Exception:
+        return None
+    match = re.search(r"BYDAY=([^;]+)", rrule_text)
+    if not match:
+        return None
+    return match.group(1).split(",")
+
+
+def _recurrence_weekday_matcher(recurring_vevent):
+    """Return a function date -> bool testing whether a date is
+    consistent with `recurring_vevent`'s recurrence pattern (same
+    weekday, and same ordinal-in-month if the rule specifies particular
+    ones), or None if there's no usable RRULE/DTSTART to go on. Handles
+    both "1MO"-style (specific ordinal) and plain "MO"-style (any
+    occurrence, e.g. from a hand-written FREQ=WEEKLY;BYDAY=MO) BYDAY
+    entries, and falls back to "same weekday as DTSTART" for a bare
+    FREQ=WEEKLY with no BYDAY at all."""
+    rrule_prop = recurring_vevent.get("RRULE")
+    dtstart_prop = recurring_vevent.get("DTSTART")
+    if rrule_prop is None or dtstart_prop is None:
+        return None
+
+    byday_list = _parse_byday_list(rrule_prop)
+    if byday_list:
+        def matcher(d):
+            weekday_code = WEEKDAY_CODES[d.weekday()]
+            ordinal_code = f"{_nth_weekday_of_month(d)}{weekday_code}"
+            return ordinal_code in byday_list or weekday_code in byday_list
+        return matcher
+
+    anchor_weekday = dtstart_prop.dt.weekday()
+
+    def fallback_matcher(d):
+        return d.weekday() == anchor_weekday
+    return fallback_matcher
+
+
+def rebase_recurring_event_anchor(recurring_vevent, candidate_dates):
+    """If any of `candidate_dates` predates `recurring_vevent`'s current
+    DTSTART anchor AND genuinely fits its recurrence pattern (checked
+    via _recurrence_weekday_matcher), move DTSTART back to the earliest
+    such date (keeping the same time-of-day).
+
+    This matters because dateutil's rrule never generates occurrences
+    before a series' own DTSTART -- so without this, a hand-authored
+    recurring event anchored on, say, its 3rd occurrence would never
+    recognize a scraped duplicate for its 1st occurrence as the same
+    series, purely because of which date happened to get typed into
+    recurring_events.ics, not because of anything actually wrong with
+    the match."""
+    dtstart_prop = recurring_vevent.get("DTSTART")
+    if dtstart_prop is None:
+        return
+
+    matcher = _recurrence_weekday_matcher(recurring_vevent)
+    if matcher is None:
+        return
+
+    current_dtstart = dtstart_prop.dt
+    current_date = current_dtstart.date() if isinstance(current_dtstart, datetime) else current_dtstart
+
+    valid_earlier_dates = [d for d in candidate_dates if d < current_date and matcher(d)]
+    if not valid_earlier_dates:
+        return
+
+    new_anchor_date = min(valid_earlier_dates)
+    if isinstance(current_dtstart, datetime):
+        new_dtstart = datetime.combine(new_anchor_date, current_dtstart.timetz())
+    else:
+        new_dtstart = new_anchor_date
+
+    del recurring_vevent["DTSTART"]
+    recurring_vevent.add("DTSTART", new_dtstart)
+    print(f"Rebased recurring event '{event_name(recurring_vevent)}' anchor from "
+          f"{current_date.isoformat()} to {new_anchor_date.isoformat()} (earlier matching "
+          f"occurrence found in this run's scraped data).")
 
 
 def _nth_weekday_of_month(d):
@@ -656,6 +783,24 @@ def build_merged_calendar(events):
 
     recurring_events = [(s, v) for s, v in events if is_recurring_event(v)]
     single_occurrence_events = [(s, v) for s, v in events if not is_recurring_event(v)]
+
+    # Before matching scraped duplicates against each recurring event,
+    # first rebase that recurring event's anchor to the earliest
+    # matching occurrence found in this run's data, if any predate its
+    # current DTSTART -- see rebase_recurring_event_anchor() for why
+    # this matters (dateutil's rrule never generates occurrences before
+    # a series' own start date).
+    for _, recurring_vevent in recurring_events:
+        candidate_dates = []
+        for _, vevent in single_occurrence_events:
+            if not _similar(event_title_only(vevent), event_title_only(recurring_vevent), NAME_SIMILARITY_THRESHOLD):
+                continue
+            if not _similar(event_venue_raw(vevent), event_venue_raw(recurring_vevent), VENUE_SIMILARITY_THRESHOLD):
+                continue
+            day = event_day(vevent)
+            if day is not None:
+                candidate_dates.append(day)
+        rebase_recurring_event_anchor(recurring_vevent, candidate_dates)
 
     # A single-occurrence listing (e.g. a scraped one-off) that's really
     # just this run's instance of a recurring event (same name, same
