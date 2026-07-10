@@ -96,6 +96,17 @@ MIN_SPAN_DAYS_FOR_AUTO_RECURRENCE = 28
 
 WEEKDAY_CODES = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
 
+# For the "1-2 weekdays, every week" pattern (e.g. every Friday and
+# Saturday), dates are grouped into contiguous runs first (same idea as
+# the all-day span-merge's MAX_ALL_DAY_GAP_DAYS, just scaled up for a
+# weekly cadence): a gap this large or smaller between consecutive
+# dates keeps them in the same run, tolerating an occasional skipped
+# week without breaking continuity. A gap larger than this (e.g. a
+# sporadic one-off special weeks or months later, under the same name)
+# starts a new run instead -- so a strong, long recurring block can be
+# detected even alongside unrelated sporadic outliers.
+MAX_RECURRENCE_GAP_DAYS = 15
+
 
 # --------------------------------------------------------------------------
 # Timezone normalization
@@ -446,6 +457,50 @@ def detect_monthly_nth_weekday_pattern(dates):
     ordinals = sorted({_nth_weekday_of_month(d) for d in sorted_dates})
     byday = [f"{n}{WEEKDAY_CODES[weekday]}" for n in ordinals]
     return {"FREQ": "MONTHLY", "BYDAY": byday}
+
+
+def detect_weekly_multi_weekday_pattern(dates):
+    """Detect a "same 1-2 weekdays, every week" pattern (e.g. every
+    Friday and Saturday) that holds for a confident, sufficiently long
+    contiguous block of dates -- even if there are unrelated sporadic
+    outlier dates before/after it (e.g. one-off holiday specials under
+    the same name that don't belong to the regular weekly schedule).
+
+    Unlike detect_monthly_nth_weekday_pattern(), this allows more than
+    one weekday and doesn't require every date supplied to fit the
+    pattern -- only a strong, sufficiently long contiguous run needs to
+    (dates are split into runs first using the same gap-tolerant
+    contiguity idea as the all-day span-merge, just scaled up for a
+    weekly cadence via MAX_RECURRENCE_GAP_DAYS).
+
+    Returns (rrule_dict, matched_dates) for the best qualifying run, or
+    None if nothing confident was found. `matched_dates` is the subset
+    of `dates` absorbed into the pattern -- any not in that set should
+    be left by the caller as standalone events, not swept in."""
+    sorted_dates = sorted(set(dates))
+    if len(sorted_dates) < MIN_OCCURRENCES_FOR_AUTO_RECURRENCE:
+        return None
+
+    runs = _group_into_contiguous_runs(sorted_dates, MAX_RECURRENCE_GAP_DAYS)
+
+    best_run = None
+    for run in runs:
+        if len(run) < MIN_OCCURRENCES_FOR_AUTO_RECURRENCE:
+            continue
+        if (run[-1] - run[0]).days < MIN_SPAN_DAYS_FOR_AUTO_RECURRENCE:
+            continue
+        weekdays_in_run = {d.weekday() for d in run}
+        if len(weekdays_in_run) not in (1, 2):
+            continue
+        if best_run is None or len(run) > len(best_run):
+            best_run = run
+
+    if best_run is None:
+        return None
+
+    weekdays_in_run = sorted({d.weekday() for d in best_run})
+    byday = [WEEKDAY_CODES[w] for w in weekdays_in_run]
+    return {"FREQ": "WEEKLY", "BYDAY": byday}, set(best_run)
 
 
 def synthesize_recurring_event(items, rrule_dict):
@@ -867,14 +922,30 @@ def build_merged_calendar(events):
     remaining_single_events = []
     for (name, venue), items in exact_match_groups.items():
         dates = [event_day(v) for _, v in items]
+
         rrule_dict = detect_monthly_nth_weekday_pattern(dates)
         if rrule_dict:
             auto_recurring_events.append(synthesize_recurring_event(items, rrule_dict))
             print(f"Detected recurring pattern for '{name}' @ '{venue}': {rrule_dict} "
                   f"from {len(set(dates))} occurrence(s); synthesizing one recurring event "
                   f"instead of keeping them separate.")
-        else:
-            remaining_single_events.extend(items)
+            continue
+
+        multi_result = detect_weekly_multi_weekday_pattern(dates)
+        if multi_result:
+            multi_rrule_dict, matched_dates = multi_result
+            matched_items = [item for item in items if event_day(item[1]) in matched_dates]
+            leftover_items = [item for item in items if event_day(item[1]) not in matched_dates]
+            auto_recurring_events.append(synthesize_recurring_event(matched_items, multi_rrule_dict))
+            print(f"Detected recurring pattern for '{name}' @ '{venue}': {multi_rrule_dict} "
+                  f"from {len(matched_dates)} occurrence(s) in a confident run "
+                  f"({min(matched_dates).isoformat()} to {max(matched_dates).isoformat()}); "
+                  f"synthesizing one recurring event. {len(leftover_items)} other date(s) for "
+                  f"this same name+venue didn't fit and are being kept as standalone events.")
+            remaining_single_events.extend(leftover_items)
+            continue
+
+        remaining_single_events.extend(items)
 
     single_occurrence_events = remaining_single_events
 
