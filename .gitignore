@@ -3,3 +3,7 @@ calendars/*.ics
 .vscode/
 src/__pycache__/*
 *.kate-swp
+.continue/
+*.html
+*.json
+*.txt
