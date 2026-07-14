@@ -15,9 +15,10 @@ import hashlib
 import os
 import re
 import sys
+import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scraper_debug import save_debug_page
+from scraper_debug import save_debug_page, save_request_debug_page
 
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -38,7 +39,58 @@ session.headers.update({
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-AU,en;q=0.9",
     "Referer": "https://musick.com.au/",
+    # A plain `requests` GET never sends these by default, but a real
+    # browser always does for a top-level page load -- some bot/WAF
+    # checks (this site returned a bare 403 on GitHub Actions' shared
+    # runner IPs, while working fine from a home connection) key off
+    # their absence as a bot signal.
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
 })
+
+# Common substrings seen on bot-challenge / block pages (Cloudflare and
+# similar). Used only to make failures easier to diagnose from CI logs.
+CHALLENGE_PAGE_MARKERS = [
+    "just a moment", "cf-browser-verification", "cf_chl", "cf-chl",
+    "attention required", "access denied", "captcha", "are you a robot",
+]
+
+
+def looks_like_challenge_page(html_text):
+    lowered = html_text.lower()
+    return any(marker in lowered for marker in CHALLENGE_PAGE_MARKERS)
+
+
+def fetch_page(url, retries=3, backoff_seconds=2):
+    """GET `url` with a few retries and backoff, in case of a transient
+    block. Returns the response object (even on a non-2xx status, so the
+    caller can inspect/debug it) -- raises only if every attempt fails
+    to even get a response (e.g. connection errors)."""
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            r = session.get(url, timeout=20)
+            return r
+        except requests.RequestException as e:
+            last_exc = e
+            print(f"Warning: request to {url} failed (attempt {attempt}/{retries}): {e}")
+            if attempt < retries:
+                time.sleep(backoff_seconds * attempt)
+    raise last_exc
+
+def guess_year(month, today=None):
+    """The guide lists dates without a year. If the month has already
+    passed relative to today, assume the listing is for next year."""
+    today = today or datetime.now()
+    year = today.year
+    if month < today.month:
+        year += 1
+    return year
+
 
 def parse_date(day_text, month_text):
     """Parse day and month text into a date object."""
@@ -53,10 +105,9 @@ def parse_date(day_text, month_text):
         month = months.get(month_text.upper())
         if not month:
             return None
-        
-        # For now, use current year - we'll need to adjust for year boundaries
-        year = datetime.now().year
-        
+
+        year = guess_year(month)
+
         return datetime(year, month, day)
     except (ValueError, TypeError):
         return None
@@ -183,16 +234,26 @@ def build_calendar(events):
     return cal
 
 def main():
-    r = session.get(BASE_URL, timeout=20)
+    r = fetch_page(BASE_URL)
     if not r.ok:
         print(f"Error: GET {BASE_URL} returned {r.status_code} {r.reason}")
-        save_debug_page("musick", "http_error", r.text)
+        if looks_like_challenge_page(r.text):
+            print(
+                "The response looks like a bot-challenge/block page rather than the "
+                "real site -- the request was likely blocked. This is a common issue "
+                "for shared CI runner IPs (e.g. GitHub Actions'), even when the exact "
+                "same code works fine from a home connection. If this keeps happening, "
+                "this scraper may need to run somewhere with a non-datacenter IP (e.g. "
+                "a self-hosted runner), or via a JS-capable fetcher that can pass the "
+                "challenge."
+            )
+        save_request_debug_page("musick", "http_error", r)
         raise SystemExit(1)
 
-    # Check for bot challenge
-    if "just a moment" in r.text.lower() or "cf-browser-verification" in r.text.lower():
+    # Check for bot challenge (can still happen on a 200 response)
+    if looks_like_challenge_page(r.text):
         print("Warning: The response looks like a bot-challenge page")
-        save_debug_page("musick", "bot_challenge", r.text)
+        save_request_debug_page("musick", "bot_challenge", r)
         raise SystemExit(1)
 
     events = extract_events_from_page(r.text)

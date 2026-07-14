@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 DEBUG_DIR = "calendars/debug"
 
+
 def save_debug_page(scraper_name, label, content):
     """Save `content` (a page's raw HTML/text) for later inspection.
     Returns the path it was saved to, or None if `content` was empty."""
@@ -36,3 +37,50 @@ def save_debug_page(scraper_name, label, content):
 
     print(f"Saved failed/unexpected page for debugging: {path}")
     return path
+
+
+def save_request_debug_page(scraper_name, label, response):
+    """Save a full request+response snapshot for a failed/unexpected
+    `requests` call: method, URL, request headers, request body (if
+    any), response status, response headers, and response body -- not
+    just the raw response text. This is what tells you, for example,
+    whether a 403 came back with a body that looks like a bot-challenge
+    page or block page, and exactly what headers were sent/received,
+    without needing to reproduce the request by hand.
+
+    `response` should be the `requests.Response` object from the failed
+    call (its `.request` attribute is used to reconstruct what was
+    sent). Returns the path it was saved to, or None if `response` is
+    None."""
+    if response is None:
+        return None
+
+    req = response.request
+    lines = [
+        "=== REQUEST ===",
+        f"{req.method} {req.url}",
+        "",
+        "--- Request Headers ---",
+    ]
+    for key, value in req.headers.items():
+        lines.append(f"{key}: {value}")
+
+    if req.body:
+        body = req.body
+        if isinstance(body, bytes):
+            body = body.decode("utf-8", errors="replace")
+        lines += ["", "--- Request Body ---", body]
+
+    lines += [
+        "",
+        "=== RESPONSE ===",
+        f"Status: {response.status_code} {response.reason}",
+        "",
+        "--- Response Headers ---",
+    ]
+    for key, value in response.headers.items():
+        lines.append(f"{key}: {value}")
+
+    lines += ["", "--- Response Body ---", response.text]
+
+    return save_debug_page(scraper_name, label, "\n".join(lines))

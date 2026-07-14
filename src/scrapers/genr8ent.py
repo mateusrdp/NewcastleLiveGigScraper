@@ -58,7 +58,7 @@ import re
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scraper_debug import save_debug_page
+from scraper_debug import save_debug_page, save_request_debug_page
 
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -215,19 +215,19 @@ def fetch_gigs():
     r = session.post(PROCESS_URL, data=payload, timeout=20)
     if not r.ok:
         print(f"Error: POST to {PROCESS_URL} returned {r.status_code} {r.reason}")
-        save_debug_page("genr8ent", "http_error", r.text)
+        save_request_debug_page("genr8ent", "http_error", r)
         return []
 
     try:
         data = r.json()
     except ValueError:
         print("Error: process.php response was not valid JSON")
-        save_debug_page("genr8ent", "invalid_json", r.text)
+        save_request_debug_page("genr8ent", "invalid_json", r)
         return []
 
     if not data.get("success"):
         print(f"Error: process.php reported failure: {data.get('message')}")
-        save_debug_page("genr8ent", "not_success", r.text)
+        save_request_debug_page("genr8ent", "not_success", r)
         return []
 
     html_fragment = data.get("html", "")
