@@ -15,7 +15,7 @@ import os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scraper_debug import save_debug_page
+from scraper_debug import save_debug_page, save_request_debug_page
 
 import requests
 from bs4 import BeautifulSoup
@@ -93,7 +93,7 @@ def fetch_page(page_num, retries=3, backoff_seconds=2):
     for attempt in range(1, retries + 1):
         try:
             r = session.get(url, timeout=20)
-            return r.text, url, r.ok, r.status_code, r.reason
+            return r, r.text, url, r.ok, r.status_code, r.reason
         except requests.RequestException as e:
             last_exc = e
             print(f"Warning: request to {url} failed (attempt {attempt}/{retries}): {e}")
@@ -226,34 +226,34 @@ def fetch_ajax_events(config, page_num):
 
     r = session.post(AJAX_URL, data=payload, timeout=20)
     if not r.ok:
-        return None, r.status_code, r.reason, r.text
+        return None, r.status_code, r.reason, r
 
     try:
         data = r.json()
     except ValueError:
-        return None, r.status_code, "Invalid JSON", r.text
+        return None, r.status_code, "Invalid JSON", r
 
     if not data.get("success"):
-        return None, r.status_code, "AJAX call returned success=false", r.text
+        return None, r.status_code, "AJAX call returned success=false", r
 
     html = data.get("data", {}).get("html", "")
-    return html, r.status_code, "OK", r.text
+    return html, r.status_code, "OK", r
 
 cal = Calendar()
 cal.add("prodid", "-//NewcastleLiveGigScraper//newcastlelive//EN")
 cal.add("version", "2.0")
 seen = set()
 
-first_page_html, url, is_ok, status_code, reason = fetch_page(1)
+first_page_response, first_page_html, url, is_ok, status_code, reason = fetch_page(1)
 if not is_ok:
     print(f"Error: GET {url} returned {status_code} {reason}")
-    save_debug_page("newcastlelive", "http_error_page1", first_page_html)
+    save_request_debug_page("newcastlelive", "http_error_page1", first_page_response)
     raise SystemExit(1)
 
 config = parse_nlgg_config(first_page_html)
 if not config:
     print("Error: Could not parse window.NLGG config from page HTML")
-    save_debug_page("newcastlelive", "no_nlgg_config", first_page_html)
+    save_request_debug_page("newcastlelive", "no_nlgg_config", first_page_response)
     if looks_like_challenge_page(first_page_html):
         print(
             "The response looks like a bot-challenge/CAPTCHA page rather than the "
@@ -273,11 +273,11 @@ page = 1
 max_pages_safety = 200
 
 while page <= max_pages_safety:
-    html, status_code, reason, raw_response_text = fetch_ajax_events(config, page)
+    html, status_code, reason, ajax_response = fetch_ajax_events(config, page)
 
     if html is None:
         print(f"Warning: stopping scrape because AJAX page {page} returned {status_code} {reason}")
-        save_debug_page("newcastlelive", f"ajax_error_page{page}", raw_response_text)
+        save_request_debug_page("newcastlelive", f"ajax_error_page{page}", ajax_response)
         break
 
     soup = BeautifulSoup(html, "html.parser")

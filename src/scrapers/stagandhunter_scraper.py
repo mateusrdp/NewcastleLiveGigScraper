@@ -40,7 +40,7 @@ import os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scraper_debug import save_debug_page
+from scraper_debug import save_debug_page, save_request_debug_page
 
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -89,20 +89,20 @@ def fetch_page(page_num):
     r = session.post(ALGOLIA_URL, data=json.dumps(payload), timeout=20)
     if not r.ok:
         print(f"Error: POST to Algolia returned {r.status_code} {r.reason}")
-        save_debug_page("staghunter", f"http_error_page{page_num}", r.text)
+        save_request_debug_page("staghunter", f"http_error_page{page_num}", r)
         return None
 
     try:
         data = r.json()
     except ValueError:
         print("Error: Algolia response was not valid JSON")
-        save_debug_page("staghunter", f"invalid_json_page{page_num}", r.text)
+        save_request_debug_page("staghunter", f"invalid_json_page{page_num}", r)
         return None
 
     results = data.get("results")
     if not results:
         print("Error: Algolia response had no 'results'")
-        save_debug_page("staghunter", f"no_results_page{page_num}", r.text)
+        save_request_debug_page("staghunter", f"no_results_page{page_num}", r)
         return None
 
     return results[0]

@@ -26,7 +26,7 @@ import re
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scraper_debug import save_debug_page
+from scraper_debug import save_debug_page, save_request_debug_page
 
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
@@ -167,7 +167,7 @@ def scrape_gig_guide(url):
     r = session.get(url)
     if not r.ok:
         print(f"Error: GET {url} returned {r.status_code} {r.reason}")
-        save_debug_page("newcastleweekly", "http_error", r.text)
+        save_request_debug_page("newcastleweekly", "http_error", r)
         return []
 
     soup = BeautifulSoup(r.text, "html.parser")
