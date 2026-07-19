@@ -9,7 +9,13 @@ this:
   2. Fills in a default 3-hour duration for any timed event that has a
      start but no end (moved here from the individual scrapers, so it's
      one shared rule instead of duplicated per-scraper logic).
-  3. Merges events that are almost certainly the same real-world event:
+  3. Title-cases SUMMARY/LOCATION, then strips the words "the" and
+     "hotel" out of the venue -- both in LOCATION and in SUMMARY's
+     " @ <venue>" suffix -- per event_formats.md (e.g. "The Stag and
+     Hunter Hotel" -> "Stag and Hunter"). This runs before any fuzzy
+     matching/merging below, so venue comparisons and merged output are
+     already using the cleaned-up venue text.
+  4. Merges events that are almost certainly the same real-world event:
        - Timed events: same calendar day, similar name, similar venue
          (fuzzy-matched, not exact — different sites word the same gig
          slightly differently, e.g. "Music Bingo With Bonnie Anne" vs
@@ -32,7 +38,7 @@ this:
      independent confirmation) and only one is kept, rather than being
      merged into a description that just repeats that source's info
      twice.
-  4. Optionally filters the merged result against one or more regex
+  5. Optionally filters the merged result against one or more regex
      patterns (one per line in a filters/*.txt file), matched against the
      SUMMARY only. An event is kept if it matches ANY pattern in the file
      (union of matches) -- each line is an independent match rule, e.g.
@@ -204,6 +210,50 @@ def apply_title_case(vevent):
         vevent.add(field, new_value)
 
 
+# Whole-word, case-insensitive: matches "the"/"hotel" as standalone
+# words but not inside other words (e.g. won't touch "Hotels" or
+# "Theatre"). Per event_formats.md: venue names should omit these to
+# keep summaries/locations short (e.g. "The Stag and Hunter Hotel" ->
+# "Stag and Hunter").
+_VENUE_STOPWORD_RE = re.compile(r"\b(the|hotel)\b", re.IGNORECASE)
+
+
+def clean_venue_text(text):
+    """Strip the words "the" and "hotel" out of a venue string and
+    collapse the resulting extra whitespace."""
+    if not text:
+        return text
+    cleaned = _VENUE_STOPWORD_RE.sub("", text)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def apply_venue_cleanup(vevent):
+    """Remove "the"/"hotel" from `vevent`'s venue, in place, in both
+    places it appears:
+      - LOCATION, taken as the venue in full.
+      - SUMMARY's " @ <venue>" suffix, if present (everything after the
+        first " @ " -- scrapers format SUMMARY as "Title @ Venue" with
+        LOCATION holding the same venue text).
+    Run this before any fuzzy matching/merging, so venue comparisons and
+    merged output are already using the cleaned-up venue text."""
+    loc = vevent.get("LOCATION")
+    if loc:
+        cleaned_loc = clean_venue_text(str(loc))
+        del vevent["LOCATION"]
+        if cleaned_loc:
+            vevent.add("LOCATION", cleaned_loc)
+
+    summary = vevent.get("SUMMARY")
+    if summary:
+        summary_text = str(summary)
+        title_part, sep, venue_part = summary_text.partition(" @ ")
+        if sep:
+            cleaned_venue = clean_venue_text(venue_part)
+            new_summary = f"{title_part} @ {cleaned_venue}" if cleaned_venue else title_part
+            del vevent["SUMMARY"]
+            vevent.add("SUMMARY", new_summary)
+
+
 # Some ICS writers emit a bare 8-digit date like "DTSTART:20260717"
 # without the ";VALUE=DATE" parameter RFC 5545 requires to disambiguate
 # it from a (malformed) DATE-TIME. The `icalendar` library correctly
@@ -251,6 +301,7 @@ def load_events(folder):
             normalize_timezone(component)
             apply_default_duration(component)
             apply_title_case(component)
+            apply_venue_cleanup(component)
             events.append((fname, component))
             count += 1
         print(f"  {fname}: {count} event(s)")

@@ -3,7 +3,7 @@ VERSION:2.0
 PRODID:-//NewcastleLiveGigScraper//recurring_events//EN
 
 BEGIN:VEVENT
-SUMMARY:Punchline Live Comedy @ Stag & Hunter Hotel
+SUMMARY:Punchline Live Comedy @ Stag & Hunter
 DTSTART;TZID=Australia/Sydney:20260715T193000
 RRULE:FREQ=MONTHLY;BYDAY=1WE
 LOCATION:Stag & Hunter Hotel
@@ -18,7 +18,7 @@ DTSTAMP:20260707T000000Z
 END:VEVENT
 
 BEGIN:VEVENT
-SUMMARY:Merewether Fats Blues Jam @ Stag & Hunter Hotel
+SUMMARY:Merewether Fats Blues Jam @ Stag & Hunter
 DTSTART;TZID=Australia/Sydney:20260716T193000
 RRULE:FREQ=MONTHLY;BYDAY=1TH
 LOCATION:Stag & Hunter Hotel
@@ -33,7 +33,7 @@ DTSTAMP:20260707T000000Z
 END:VEVENT
 
 BEGIN:VEVENT
-SUMMARY:Temple of the Stag @ Stag & Hunter Hotel
+SUMMARY:Temple of the Stag @ Stag & Hunter
 DTSTART;TZID=Australia/Sydney:20260716T193000
 RRULE:FREQ=MONTHLY;BYDAY=1MO,3MO
 LOCATION:Stag & Hunter Hotel
@@ -47,7 +47,7 @@ DTSTAMP:20260707T000000Z
 END:VEVENT
 
 BEGIN:VEVENT
-SUMMARY:Jazz Jam @ The Underground
+SUMMARY:Jazz Jam @ Underground
 DTSTART;TZID=Australia/Sydney:20260716T193000
 RRULE:FREQ=MONTHLY;BYDAY=1TH,2TH,3TH,4TH
 LOCATION:The Underground
