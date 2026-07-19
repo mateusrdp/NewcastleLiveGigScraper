@@ -9,23 +9,38 @@ this:
   2. Fills in a default 3-hour duration for any timed event that has a
      start but no end (moved here from the individual scrapers, so it's
      one shared rule instead of duplicated per-scraper logic).
-  3. Title-cases SUMMARY/LOCATION, then substitutes any settings/
-     aliases.json entries found in SUMMARY or LOCATION (e.g. "Wickham
-     Park Hotel" -> "Wicko"), then removes anything from the first ','
-     or the first '-' up to the first '@' in SUMMARY (e.g. "Nirvanna,
-     Ft. Someone @ King Street" -> "Nirvanna @ King Street", "Nirvanna
-     - Album Launch @ King Street" -> "Nirvanna @ King Street"), then
-     strips the words "the" and "hotel" out of the venue -- both in
-     LOCATION and in SUMMARY's " @ <venue>" suffix -- per
-     event_formats.md (e.g. "The Stag and Hunter Hotel" -> "Stag and
-     Hunter"). Also strips anything found between two "special"
-     characters (()[]{}\\/ -- not necessarily a matched pair, e.g.
-     "(SOLD]" counts) out of both SUMMARY and LOCATION, e.g.
-     "Gig (SOLD OUT) @ Venue (Newcastle)" -> "Gig @ Venue" with
-     LOCATION "Venue". SUMMARY is trimmed of leading/trailing
-     whitespace as a final step. This all runs before any fuzzy
-     matching/merging below, so comparisons and merged output are
-     already using the cleaned-up text.
+  3. Cleans up SUMMARY/LOCATION, in this order:
+       a. Converts a standalone word "at" (whitespace on both sides) in
+          SUMMARY into "@", so titles that never used an "@" at all
+          (e.g. "My dumb event at the pub") still have something for
+          the rest of this pipeline to split title from venue on.
+          Known false positive, accepted: "Panic at the Disco" becomes
+          "Panic @ the Disco".
+       b. Title-cases SUMMARY/LOCATION.
+       c. Substitutes any settings/aliases.json entries found in
+          SUMMARY or LOCATION (e.g. "Wickham Park Hotel" -> "Wicko").
+       d. Removes anything from the first ',' up to the first '@' in
+          SUMMARY (e.g. "Nirvanna, Ft. Someone @ King Street" ->
+          "Nirvanna @ King Street"), and separately anything from the
+          first ' - ' (dash with whitespace on both sides) up to the
+          first '@' (e.g. "Nirvanna - Album Launch @ King Street" ->
+          "Nirvanna @ King Street"; a mid-word dash like "Post-Punk" is
+          left alone since it has no surrounding whitespace).
+       e. Strips any day-of-week name out of SUMMARY (e.g. "Saturday
+          DJs @ Venue" -> "DJs @ Venue").
+       f. Strips the words "the" and "hotel" out of the venue -- both
+          in LOCATION and in SUMMARY's " @ <venue>" suffix -- per
+          event_formats.md (e.g. "The Stag and Hunter Hotel" -> "Stag
+          and Hunter").
+       g. Strips anything found between two "special" characters
+          (()[]{}\\/ -- not necessarily a matched pair, e.g. "(SOLD]"
+          counts) out of both SUMMARY and LOCATION, e.g.
+          "Gig (SOLD OUT) @ Venue (Newcastle)" -> "Gig @ Venue" with
+          LOCATION "Venue".
+       h. Trims SUMMARY of leading/trailing whitespace.
+     This all runs before any fuzzy matching/merging below, so
+     comparisons and merged output are already using the cleaned-up
+     text.
   4. Merges events that are almost certainly the same real-world event:
        - Timed events: same calendar day, similar name, similar venue
          (fuzzy-matched, not exact — different sites word the same gig
@@ -208,6 +223,41 @@ def title_case_text(text):
     return _WORD_RE.sub(fix_word, text)
 
 
+def normalize_at_to_symbol(text):
+    """Replace a standalone word "at", with whitespace on both sides,
+    with "@" -- e.g. "My Dumb Event at The Pub" -> "My Dumb Event @
+    The Pub". Case-insensitive, so "At"/"AT" are caught too.
+
+    This exists to catch marketing-written titles that never used an
+    "@" at all (e.g. "My dumb event at the pub", "DJs at Vic Hotel")
+    so the rest of the "Title @ Venue" pipeline -- which otherwise only
+    works for scrapers/sites that already format things that way --
+    still has something to split on. Deliberately whole-word with
+    required surrounding whitespace, not just any "at" substring, so
+    it won't touch words like "Chat" or "Attic". Known, accepted
+    false-positive: this also fires on titles that genuinely contain
+    the word "at" as part of a name (e.g. "Panic at the Disco"), which
+    will get incorrectly treated as "Panic @ the Disco" (i.e. as if
+    "the Disco" were a venue). No attempt is made to distinguish that
+    case here."""
+    if not text:
+        return text
+    return re.sub(r"(?<=\s)at(?=\s)", "@", text, flags=re.IGNORECASE)
+
+
+def apply_summary_at_normalization(vevent):
+    """Rewrite SUMMARY on `vevent` in place via
+    normalize_at_to_symbol(). Must run before apply_title_case() and
+    apply_aliases() (and any other SUMMARY substitution), since those
+    rely on "@" already being in place to find the venue portion."""
+    summary = vevent.get("SUMMARY")
+    if summary is None:
+        return
+    cleaned = normalize_at_to_symbol(str(summary))
+    del vevent["SUMMARY"]
+    vevent.add("SUMMARY", cleaned)
+
+
 def apply_title_case(vevent):
     """Rewrite SUMMARY and LOCATION on `vevent` in place via
     title_case_text(). Deliberately doesn't touch DESCRIPTION, since
@@ -324,10 +374,24 @@ def strip_comma_to_at(text):
 
 
 def strip_dash_to_at(text):
-    """Remove anything from the first '-' up to (not including) the
-    first '@' in `text` -- e.g. "Nirvanna - Album Launch @ King Street"
-    -> "Nirvanna @ King Street"."""
-    return _strip_char_to_at(text, "-")
+    """Remove anything from the first ' - ' (a '-' with whitespace on
+    both sides) up to (not including) the first '@' in `text` -- e.g.
+    "Nirvanna - Album Launch @ King Street" -> "Nirvanna @ King
+    Street". Deliberately requires whitespace on both sides of the
+    dash (unlike the comma version), since dashes are common *inside*
+    single words (e.g. "Post-Punk", "Sold-Out") where stripping from
+    the first one would wrongly eat part of the title; a real "topic
+    switch" dash is always surrounded by spaces in practice."""
+    if not text:
+        return text
+    dash_match = re.search(r"(?<=\s)-(?=\s)", text)
+    at_idx = text.find("@")
+    if not dash_match or at_idx == -1 or dash_match.start() > at_idx:
+        return text
+
+    prefix = text[: dash_match.start()].rstrip()
+    suffix = text[at_idx:].lstrip()
+    return f"{prefix} {suffix}" if prefix else suffix
 
 
 def apply_summary_comma_cleanup(vevent):
@@ -439,6 +503,37 @@ def apply_special_char_cleanup(vevent):
             vevent.add(field, cleaned)
 
 
+# Whole-word, case-insensitive: strips full day names ("Saturday
+# DJs" -> "DJs"). Deliberately only matches the exact singular word
+# (like the "the"/"hotel" venue stripping above), so "Saturdays" is
+# left alone rather than partially mangled.
+_DAY_NAME_RE = re.compile(
+    r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.IGNORECASE,
+)
+
+
+def strip_days_of_week(text):
+    """Remove any day-of-week name from `text` and collapse the
+    resulting extra whitespace -- e.g. "Saturday DJs @ Venue" ->
+    "DJs @ Venue". Handles marketing-speak titles that bury the day in
+    the title text instead of relying on DTSTART."""
+    if not text:
+        return text
+    cleaned = _DAY_NAME_RE.sub("", text)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def apply_summary_day_cleanup(vevent):
+    """Rewrite SUMMARY on `vevent` in place via strip_days_of_week()."""
+    summary = vevent.get("SUMMARY")
+    if summary is None:
+        return
+    cleaned = strip_days_of_week(str(summary))
+    del vevent["SUMMARY"]
+    vevent.add("SUMMARY", cleaned)
+
+
 def apply_summary_trim(vevent):
     """Strip leading/trailing whitespace from SUMMARY, in place. Run as
     the last step of the SUMMARY cleanup chain -- each individual step
@@ -505,10 +600,12 @@ def load_events(folder, aliases=None):
         for component in cal.walk("VEVENT"):
             normalize_timezone(component)
             apply_default_duration(component)
+            apply_summary_at_normalization(component)
             apply_title_case(component)
             apply_aliases(component, aliases)
             apply_summary_comma_cleanup(component)
             apply_summary_dash_cleanup(component)
+            apply_summary_day_cleanup(component)
             apply_venue_cleanup(component)
             apply_special_char_cleanup(component)
             apply_summary_trim(component)
