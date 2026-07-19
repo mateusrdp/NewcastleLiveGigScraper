@@ -12,9 +12,12 @@ this:
   3. Title-cases SUMMARY/LOCATION, then strips the words "the" and
      "hotel" out of the venue -- both in LOCATION and in SUMMARY's
      " @ <venue>" suffix -- per event_formats.md (e.g. "The Stag and
-     Hunter Hotel" -> "Stag and Hunter"). This runs before any fuzzy
-     matching/merging below, so venue comparisons and merged output are
-     already using the cleaned-up venue text.
+     Hunter Hotel" -> "Stag and Hunter"). Also strips anything found
+     between two "special" characters (()[]{}\\/ -- not necessarily a
+     matched pair, e.g. "(SOLD]" counts) out of SUMMARY, e.g.
+     "Gig (SOLD OUT) @ Venue" -> "Gig @ Venue". This all runs before
+     any fuzzy matching/merging below, so comparisons and merged output
+     are already using the cleaned-up text.
   4. Merges events that are almost certainly the same real-world event:
        - Timed events: same calendar day, similar name, similar venue
          (fuzzy-matched, not exact — different sites word the same gig
@@ -254,6 +257,59 @@ def apply_venue_cleanup(vevent):
             vevent.add("SUMMARY", new_summary)
 
 
+# Characters treated as delimiters for stripping bracketed/parenthetical
+# annotations out of SUMMARY (e.g. "(SOLD OUT)", "[Cancelled]",
+# "{Early Access}"). Includes both slashes too, per the requested set.
+_SPECIAL_CHARS = set("()[]{}\\/")
+
+
+def strip_special_char_content(text):
+    """Remove anything found between two of `_SPECIAL_CHARS`, scanning
+    left to right and pairing sequentially -- the two delimiters don't
+    have to be the same type (e.g. "(SOLD]" is treated just like a
+    matched pair), since these are inconsistently typed by different
+    sites/scrapers. If an opening delimiter has no closing one later in
+    the string, everything from it to the end of the string is dropped
+    (rather than left dangling), since "not necessarily matched" cuts
+    both ways: a stray delimiter still means "start removing here."
+
+    Note this also means slashes count as delimiters: a title with two
+    slashes will have everything between them removed, and a title with
+    a single, otherwise-unpaired slash (e.g. "Rock/Pop Night") will have
+    everything from that slash to the end of the string removed, not
+    just the slash itself.
+    """
+    if not text:
+        return text
+
+    result = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] in _SPECIAL_CHARS:
+            j = i + 1
+            while j < n and text[j] not in _SPECIAL_CHARS:
+                j += 1
+            i = (j + 1) if j < n else n
+        else:
+            result.append(text[i])
+            i += 1
+
+    return re.sub(r"\s+", " ", "".join(result)).strip()
+
+
+def apply_summary_special_char_cleanup(vevent):
+    """Rewrite SUMMARY on `vevent` in place via
+    strip_special_char_content(). Run before any fuzzy matching/merging,
+    so name comparisons and merged output already use the cleaned-up
+    title."""
+    summary = vevent.get("SUMMARY")
+    if summary is None:
+        return
+    cleaned = strip_special_char_content(str(summary))
+    del vevent["SUMMARY"]
+    vevent.add("SUMMARY", cleaned)
+
+
 # Some ICS writers emit a bare 8-digit date like "DTSTART:20260717"
 # without the ";VALUE=DATE" parameter RFC 5545 requires to disambiguate
 # it from a (malformed) DATE-TIME. The `icalendar` library correctly
@@ -302,6 +358,7 @@ def load_events(folder):
             apply_default_duration(component)
             apply_title_case(component)
             apply_venue_cleanup(component)
+            apply_summary_special_char_cleanup(component)
             events.append((fname, component))
             count += 1
         print(f"  {fname}: {count} event(s)")
