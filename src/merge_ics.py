@@ -12,17 +12,20 @@ this:
   3. Title-cases SUMMARY/LOCATION, then substitutes any settings/
      aliases.json entries found in SUMMARY or LOCATION (e.g. "Wickham
      Park Hotel" -> "Wicko"), then removes anything from the first ','
-     up to the first '@' in SUMMARY (e.g. "Nirvanna, Ft. Someone @
-     King Street" -> "Nirvanna @ King Street"), then strips the words
-     "the" and "hotel" out of the venue -- both in LOCATION and in
-     SUMMARY's " @ <venue>" suffix -- per event_formats.md (e.g. "The
-     Stag and Hunter Hotel" -> "Stag and Hunter"). Also strips anything
-     found between two "special" characters (()[]{}\\/ -- not
-     necessarily a matched pair, e.g. "(SOLD]" counts) out of both
-     SUMMARY and LOCATION, e.g. "Gig (SOLD OUT) @ Venue (Newcastle)"
-     -> "Gig @ Venue" with LOCATION "Venue". This all runs before any
-     fuzzy matching/merging below, so comparisons and merged output
-     are already using the cleaned-up text.
+     or the first '-' up to the first '@' in SUMMARY (e.g. "Nirvanna,
+     Ft. Someone @ King Street" -> "Nirvanna @ King Street", "Nirvanna
+     - Album Launch @ King Street" -> "Nirvanna @ King Street"), then
+     strips the words "the" and "hotel" out of the venue -- both in
+     LOCATION and in SUMMARY's " @ <venue>" suffix -- per
+     event_formats.md (e.g. "The Stag and Hunter Hotel" -> "Stag and
+     Hunter"). Also strips anything found between two "special"
+     characters (()[]{}\\/ -- not necessarily a matched pair, e.g.
+     "(SOLD]" counts) out of both SUMMARY and LOCATION, e.g.
+     "Gig (SOLD OUT) @ Venue (Newcastle)" -> "Gig @ Venue" with
+     LOCATION "Venue". SUMMARY is trimmed of leading/trailing
+     whitespace as a final step. This all runs before any fuzzy
+     matching/merging below, so comparisons and merged output are
+     already using the cleaned-up text.
   4. Merges events that are almost certainly the same real-world event:
        - Timed events: same calendar day, similar name, similar venue
          (fuzzy-matched, not exact — different sites word the same gig
@@ -295,22 +298,36 @@ def apply_aliases(vevent, aliases):
         vevent.add("LOCATION", new_location)
 
 
+def _strip_char_to_at(text, marker_char):
+    """Remove anything from the first occurrence of `marker_char` up to
+    (not including) the first '@' in `text`. Only fires if the marker
+    actually occurs before the first '@'; a marker appearing in the
+    venue portion (after the '@') is left alone, and text with no '@'
+    at all is untouched."""
+    if not text:
+        return text
+    marker_idx = text.find(marker_char)
+    at_idx = text.find("@")
+    if marker_idx == -1 or at_idx == -1 or marker_idx > at_idx:
+        return text
+
+    prefix = text[:marker_idx].rstrip()
+    suffix = text[at_idx:].lstrip()
+    return f"{prefix} {suffix}" if prefix else suffix
+
+
 def strip_comma_to_at(text):
     """Remove anything from the first ',' up to (not including) the
     first '@' in `text` -- e.g. "Nirvanna, Ft. Someone @ King Street"
-    -> "Nirvanna @ King Street". Only fires if a ',' actually occurs
-    before the first '@'; a comma appearing in the venue portion (after
-    the '@') is left alone, and text with no '@' at all is untouched."""
-    if not text:
-        return text
-    comma_idx = text.find(",")
-    at_idx = text.find("@")
-    if comma_idx == -1 or at_idx == -1 or comma_idx > at_idx:
-        return text
+    -> "Nirvanna @ King Street"."""
+    return _strip_char_to_at(text, ",")
 
-    prefix = text[:comma_idx].rstrip()
-    suffix = text[at_idx:].lstrip()
-    return f"{prefix} {suffix}" if prefix else suffix
+
+def strip_dash_to_at(text):
+    """Remove anything from the first '-' up to (not including) the
+    first '@' in `text` -- e.g. "Nirvanna - Album Launch @ King Street"
+    -> "Nirvanna @ King Street"."""
+    return _strip_char_to_at(text, "-")
 
 
 def apply_summary_comma_cleanup(vevent):
@@ -319,6 +336,16 @@ def apply_summary_comma_cleanup(vevent):
     if summary is None:
         return
     cleaned = strip_comma_to_at(str(summary))
+    del vevent["SUMMARY"]
+    vevent.add("SUMMARY", cleaned)
+
+
+def apply_summary_dash_cleanup(vevent):
+    """Rewrite SUMMARY on `vevent` in place via strip_dash_to_at()."""
+    summary = vevent.get("SUMMARY")
+    if summary is None:
+        return
+    cleaned = strip_dash_to_at(str(summary))
     del vevent["SUMMARY"]
     vevent.add("SUMMARY", cleaned)
 
@@ -412,6 +439,22 @@ def apply_special_char_cleanup(vevent):
             vevent.add(field, cleaned)
 
 
+def apply_summary_trim(vevent):
+    """Strip leading/trailing whitespace from SUMMARY, in place. Run as
+    the last step of the SUMMARY cleanup chain -- each individual step
+    above (comma/dash-to-@ stripping, venue cleanup, special-char
+    stripping) already trims the pieces it touches, but this is a final
+    catch-all guarantee that SUMMARY never ends up with stray leading
+    or trailing whitespace, regardless of which combination of steps
+    fired for a given event."""
+    summary = vevent.get("SUMMARY")
+    if summary is None:
+        return
+    cleaned = str(summary).strip()
+    del vevent["SUMMARY"]
+    vevent.add("SUMMARY", cleaned)
+
+
 # Some ICS writers emit a bare 8-digit date like "DTSTART:20260717"
 # without the ";VALUE=DATE" parameter RFC 5545 requires to disambiguate
 # it from a (malformed) DATE-TIME. The `icalendar` library correctly
@@ -465,8 +508,10 @@ def load_events(folder, aliases=None):
             apply_title_case(component)
             apply_aliases(component, aliases)
             apply_summary_comma_cleanup(component)
+            apply_summary_dash_cleanup(component)
             apply_venue_cleanup(component)
             apply_special_char_cleanup(component)
+            apply_summary_trim(component)
             events.append((fname, component))
             count += 1
         print(f"  {fname}: {count} event(s)")
