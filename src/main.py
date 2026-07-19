@@ -12,7 +12,9 @@ Pipeline:
        merging below falls back to that scraper's last successful
        output instead of losing that source for the run.
     3. Merge every .ics file in calendars/ (same-named events get
-       combined, see merge_ics.py) into calendars/gigs.ics.
+       combined, and settings/aliases.json substitutions/venue cleanup
+       applied to titles first -- see merge_ics.py) into
+       calendars/gigs.ics.
     4. For every filters/*.txt regex file, filter the merged calendar
        into calendars/gigs_<filter_name>.ics.
 
@@ -34,6 +36,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCRAPERS_DIR = PROJECT_ROOT / "src" / "scrapers"
 CALENDARS_DIR = PROJECT_ROOT / "calendars"
 FILTERS_DIR = PROJECT_ROOT / "filters"
+SETTINGS_DIR = PROJECT_ROOT / "settings"
 
 
 def clean_generated_outputs():
@@ -95,7 +98,11 @@ def run_scrapers(scraper_paths):
 
 def merge_step():
     print(f"\n--- Merging calendars in '{CALENDARS_DIR}' ---")
-    events = merge_ics.load_events(str(CALENDARS_DIR))
+    aliases = merge_ics.load_aliases(str(SETTINGS_DIR))
+    if aliases:
+        print(f"Loaded {len(aliases)} alias(es) from '{SETTINGS_DIR / 'aliases.json'}'.")
+
+    events = merge_ics.load_events(str(CALENDARS_DIR), aliases=aliases)
     if not events:
         print("No events found to merge; skipping merge/filter steps.", file=sys.stderr)
         return None

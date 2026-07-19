@@ -9,15 +9,17 @@ this:
   2. Fills in a default 3-hour duration for any timed event that has a
      start but no end (moved here from the individual scrapers, so it's
      one shared rule instead of duplicated per-scraper logic).
-  3. Title-cases SUMMARY/LOCATION, then strips the words "the" and
-     "hotel" out of the venue -- both in LOCATION and in SUMMARY's
-     " @ <venue>" suffix -- per event_formats.md (e.g. "The Stag and
-     Hunter Hotel" -> "Stag and Hunter"). Also strips anything found
-     between two "special" characters (()[]{}\\/ -- not necessarily a
-     matched pair, e.g. "(SOLD]" counts) out of SUMMARY, e.g.
+  3. Title-cases SUMMARY/LOCATION, then substitutes any settings/
+     aliases.json entries found in SUMMARY or LOCATION (e.g. "Wickham
+     Park Hotel" -> "Wicko"), then strips the words "the" and "hotel"
+     out of the venue -- both in LOCATION and in SUMMARY's " @ <venue>"
+     suffix -- per event_formats.md (e.g. "The Stag and Hunter Hotel"
+     -> "Stag and Hunter"). Also strips anything found between two
+     "special" characters (()[]{}\\/ -- not necessarily a matched
+     pair, e.g. "(SOLD]" counts) out of SUMMARY, e.g.
      "Gig (SOLD OUT) @ Venue" -> "Gig @ Venue". This all runs before
-     any fuzzy matching/merging below, so comparisons and merged output
-     are already using the cleaned-up text.
+     any fuzzy matching/merging below, so comparisons and merged
+     output are already using the cleaned-up text.
   4. Merges events that are almost certainly the same real-world event:
        - Timed events: same calendar day, similar name, similar venue
          (fuzzy-matched, not exact — different sites word the same gig
@@ -61,6 +63,7 @@ import argparse
 import difflib
 import glob
 import hashlib
+import json
 import os
 import re
 import sys
@@ -230,6 +233,65 @@ def clean_venue_text(text):
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def load_aliases(settings_folder):
+    """Return {alias_from: alias_to} loaded from
+    settings_folder/aliases.json (e.g. {"Wickham Park Hotel": "Wicko"}),
+    or {} if the file doesn't exist / can't be parsed as a JSON object.
+    Not fatal on a bad file -- aliasing is a nice-to-have, so a broken
+    aliases.json shouldn't take down the whole run."""
+    path = os.path.join(settings_folder, "aliases.json")
+    if not os.path.isfile(path):
+        return {}
+
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as e:
+        print(f"Warning: could not parse aliases file '{path}': {e}", file=sys.stderr)
+        return {}
+
+    if not isinstance(data, dict):
+        print(f"Warning: aliases file '{path}' does not contain a JSON object; ignoring.", file=sys.stderr)
+        return {}
+
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def _substitute_aliases(text, aliases):
+    for key in sorted(aliases, key=len, reverse=True):
+        text = text.replace(key, aliases[key])
+    return text
+
+
+def apply_aliases(vevent, aliases):
+    """Replace any occurrence of an alias key with its value, in place,
+    in both SUMMARY and LOCATION -- so a venue's aliased short name ends
+    up consistent in both fields, rather than SUMMARY saying "Wicko"
+    while LOCATION still says "Wickham Park Hotel" (which would break
+    event_title_only()'s "does SUMMARY end with ' @ ' + LOCATION"
+    check, and so quietly weaken title-similarity matching for aliased
+    venues). Keys are matched longest-first, so a longer, more specific
+    alias (e.g. "Stag and Hunter Hotel") isn't partially shadowed by a
+    shorter one that happens to be a substring of it. Matching is a
+    plain, case-sensitive substring replace -- run this after
+    apply_title_case() so alias keys (typically written in Title Case
+    in aliases.json) actually line up with the SUMMARY/LOCATION text."""
+    if not aliases:
+        return
+
+    summary = vevent.get("SUMMARY")
+    if summary is not None:
+        new_summary = _substitute_aliases(str(summary), aliases)
+        del vevent["SUMMARY"]
+        vevent.add("SUMMARY", new_summary)
+
+    location = vevent.get("LOCATION")
+    if location is not None:
+        new_location = _substitute_aliases(str(location), aliases)
+        del vevent["LOCATION"]
+        vevent.add("LOCATION", new_location)
+
+
 def apply_venue_cleanup(vevent):
     """Remove "the"/"hotel" from `vevent`'s venue, in place, in both
     places it appears:
@@ -327,12 +389,16 @@ def _fix_bare_date_values(raw_bytes):
 # Loading
 # --------------------------------------------------------------------------
 
-def load_events(folder):
+def load_events(folder, aliases=None):
     """Return a list of (source_filename, vevent) for every VEVENT found
     in every .ics file inside `folder`. Auto-detects all .ics files.
     Every event's DTSTART/DTEND is normalized to Australia/Sydney local
     time, and given a default 3-hour duration if it has a start time but
-    no end, as it's loaded."""
+    no end, as it's loaded. `aliases` (see load_aliases()) is applied to
+    both SUMMARY and LOCATION before the "the"/"hotel" venue cleanup, so
+    an alias can stand in for a venue's full name (consistently in both
+    fields) before that name gets stripped down."""
+    aliases = aliases or {}
     events = []
     ics_files = sorted(glob.glob(os.path.join(folder, "*.ics")))
 
@@ -357,6 +423,7 @@ def load_events(folder):
             normalize_timezone(component)
             apply_default_duration(component)
             apply_title_case(component)
+            apply_aliases(component, aliases)
             apply_venue_cleanup(component)
             apply_summary_special_char_cleanup(component)
             events.append((fname, component))
@@ -1181,9 +1248,15 @@ def main():
         "-o", "--output", default="merged.ics",
         help="Output .ics filename (default: merged.ics)"
     )
+    parser.add_argument(
+        "-s", "--settings", default="settings",
+        help="Folder containing aliases.json (default: settings)"
+    )
     args = parser.parse_args()
 
-    events = load_events(args.folder)
+    aliases = load_aliases(args.settings)
+
+    events = load_events(args.folder, aliases=aliases)
     if not events:
         sys.exit(1)
 
