@@ -32,7 +32,11 @@ this:
      independent confirmation) and only one is kept, rather than being
      merged into a description that just repeats that source's info
      twice.
-  4. Optionally filters the merged result by keyword.
+  4. Optionally filters the merged result against one or more regex
+     patterns (one per line in a filters/*.txt file), matched against the
+     SUMMARY only. An event is kept if it matches ANY pattern in the file
+     (union of matches) -- each line is an independent match rule, e.g.
+     one venue's name-variants per line.
 
 Designed to be used two ways:
   1. Imported by src/main.py, which calls load_events(),
@@ -1008,25 +1012,29 @@ def build_merged_calendar(events):
 # --------------------------------------------------------------------------
 
 def load_keyword_filters(filters_folder):
-    """Return {filter_name: [keyword, ...]} for every filters/*.txt file."""
+    """Return {filter_name: [regex_pattern_str, ...]} for every
+    filters/*.txt file, one regex pattern per line."""
     filters = {}
     for filter_path in sorted(glob.glob(os.path.join(filters_folder, "*.txt"))):
         filter_name = os.path.splitext(os.path.basename(filter_path))[0]
         with open(filter_path, encoding="utf-8") as fh:
-            keywords = [line.strip() for line in fh if line.strip()]
-        if keywords:
-            filters[filter_name] = keywords
+            patterns = [line.strip() for line in fh if line.strip()]
+        if patterns:
+            filters[filter_name] = patterns
     return filters
 
 
-def filter_calendar(cal, keywords):
+def filter_calendar(cal, patterns):
     """Return a new icalendar.Calendar containing only VEVENTs from `cal`
-    whose SUMMARY matches at least one of `keywords` (whole-word,
-    case-insensitive)."""
-    patterns = [
-        re.compile(rf"(?<![A-Za-z0-9]){re.escape(kw)}(?![A-Za-z0-9])", re.IGNORECASE)
-        for kw in keywords
-    ]
+    whose SUMMARY (title) matches at least one regex in `patterns`
+    (case-insensitive).
+
+    Each line/pattern in a filter file is its own independent match rule
+    (e.g. one venue's name-variants per line); the output is the union of
+    everything any of them matched, so a filter file's lines don't
+    depend on or constrain each other.
+    """
+    compiled_patterns = [re.compile(p, re.IGNORECASE) for p in patterns]
 
     filtered = Calendar()
     filtered.add("prodid", "-//merge-ics//EN")
@@ -1034,7 +1042,7 @@ def filter_calendar(cal, keywords):
 
     for component in cal.walk("VEVENT"):
         summary = event_name(component)
-        if any(p.search(summary) for p in patterns):
+        if any(pattern.search(summary) for pattern in compiled_patterns):
             filtered.add_component(component)
 
     return filtered
