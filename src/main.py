@@ -3,19 +3,24 @@
 src/main.py
 
 Pipeline:
-    1. Wipe the calendars/ folder.
+    1. Remove only this pipeline's previously *generated* output files
+       (calendars/gigs*.ics) -- individual scraper output files are
+       left as-is.
     2. Run every scraper script in src/scrapers/. Each one is expected to
-       write its own .ics file into calendars/.
+       write its own .ics file into calendars/. If a scraper fails (or
+       produces no events) it simply doesn't overwrite its file, so
+       merging below falls back to that scraper's last successful
+       output instead of losing that source for the run.
     3. Merge every .ics file in calendars/ (same-named events get
        combined, see merge_ics.py) into calendars/gigs.ics.
-    4. For every filters/*.txt keyword file, filter the merged calendar
+    4. For every filters/*.txt regex file, filter the merged calendar
        into calendars/gigs_<filter_name>.ics.
 
 Run from anywhere with:
     python src/main.py
 """
 
-import shutil
+import glob
 import subprocess
 import sys
 from pathlib import Path
@@ -31,29 +36,28 @@ CALENDARS_DIR = PROJECT_ROOT / "calendars"
 FILTERS_DIR = PROJECT_ROOT / "filters"
 
 
-PRESERVED_FILES = {"recurring_events.ics"}
+def clean_generated_outputs():
+    """Remove this pipeline's own generated files (anything matching
+    calendars/gigs*.ics) before regenerating them.
 
+    Individual scraper .ics files are deliberately left alone -- if a
+    scraper fails to produce a fresh file this run, its *previous*
+    output stays in calendars/ and simply gets folded into the merge as
+    if that scraper hadn't run, rather than dropping that source's
+    events entirely. Non-scraper sources such as recurring_events.ics
+    are untouched for the same reason: this function only ever deletes
+    files matching calendars/gigs*.ics, which is exactly the naming
+    pattern merge_step/filter_step use for everything they produce
+    (gigs.ics, gigs_<filter_name>.ics, ...)."""
+    CALENDARS_DIR.mkdir(parents=True, exist_ok=True)
 
-def wipe_calendars_folder():
-    """Wipe calendars/ before each run, except for files in
-    PRESERVED_FILES -- these are hand-maintained sources (e.g. recurring
-    events no scraper covers) rather than scraper output, so they aren't
-    regenerated and shouldn't be deleted along with everything else."""
-    preserved = {}
-    if CALENDARS_DIR.exists():
-        for fname in PRESERVED_FILES:
-            fpath = CALENDARS_DIR / fname
-            if fpath.exists():
-                preserved[fname] = fpath.read_bytes()
-        shutil.rmtree(CALENDARS_DIR)
+    removed = []
+    for path in glob.glob(str(CALENDARS_DIR / "gigs*.ics")):
+        Path(path).unlink()
+        removed.append(Path(path).name)
 
-    CALENDARS_DIR.mkdir(parents=True)
-
-    for fname, content in preserved.items():
-        (CALENDARS_DIR / fname).write_bytes(content)
-
-    preserved_note = f" (preserved: {', '.join(sorted(preserved))})" if preserved else ""
-    print(f"Wiped '{CALENDARS_DIR}'{preserved_note}.")
+    note = f" (removed: {', '.join(sorted(removed))})" if removed else " (nothing to remove)"
+    print(f"Cleaned generated outputs in '{CALENDARS_DIR}'{note}.")
 
 
 def discover_scrapers():
@@ -122,7 +126,7 @@ def filter_step(merged_cal):
 
 
 def main():
-    wipe_calendars_folder()
+    clean_generated_outputs()
 
     scraper_paths = discover_scrapers()
     if not scraper_paths:
