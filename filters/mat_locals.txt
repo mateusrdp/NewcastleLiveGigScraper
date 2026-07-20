@@ -1,15 +1,15 @@
-Stag
+^(?!.*(?:trivia|bingo)).*Stag
 Wicko
 Wickham
 Hamilton Station
+Hamo
 Exchange
 Kent
 Carrington
 Clarendon
 Lass
-The Oak
+^(?!.*(?:trivia|bingo)).*Oak
 Gallipoli
-SJ
 The Station
 Young Street
 Seven Seas
@@ -18,7 +18,9 @@ Croatian
 Underground
 Greenroof
 Sydney Junction
+SJ
 Honeysuckle
+Oceane
 King St
 King Street
 NEX
