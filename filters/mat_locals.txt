@@ -9,6 +9,7 @@ Carrington
 Clarendon
 Lass
 ^(?!.*(?:trivia|bingo)).*Oak
+^(?!.*(?:trivia|bingo)).*Mayfield Bowlo
 Gallipoli
 The Station
 Young Street
